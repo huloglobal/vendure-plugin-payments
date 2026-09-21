@@ -657,7 +657,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (this.subSearch) params.q = this.subSearch;
         this.http.get<any>(`${API}/subscriptions`, { params }).subscribe({ next: s => { this.subs = s; this.cdr.markForCheck(); }, error: () => undefined });
     }
-    loadLinks() { this.http.get<any>(`${API}/transactions`, { params: { kind: 'paylink', perPage: '20' } }).subscribe({ next: t => { this.links = t; this.cdr.markForCheck(); }, error: () => undefined }); }
+    loadLinks() { this.http.get<any>(`${API}/transactions`, this.h({ params: { kind: 'paylink', perPage: '20' } })).subscribe({ next: t => { this.links = t; this.cdr.markForCheck(); }, error: () => undefined }); }
     loadProviders() {
         this.http.get<any>(`${API}/providers`, this.h()).subscribe({ next: p => { this.providers = p; this.cdr.markForCheck(); }, error: () => undefined });
         this.http.get<any[]>(`${API}/events`, this.h()).subscribe({ next: e => { this.events = e; this.cdr.markForCheck(); }, error: () => undefined });
@@ -780,7 +780,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     buyLifetime() { this.buyPlan = 'lifetime'; this.buyLicence(); }
 
     checkClaim(force = false) {
-        this.http.get<any>(`${API}/licence/claim-status` + (force ? '?check=1' : '')).subscribe({
+        this.http.get<any>(`${API}/licence/claim-status` + (force ? '?check=1' : ''), this.h()).subscribe({
             next: r => {
                 const wasPending = this.claim?.state === 'pending';
                 this.claim = r;
