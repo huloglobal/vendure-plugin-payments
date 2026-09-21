@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.npm/
+.yarn/
+.DS_Store
+.env
+.env.local
+*.log
+e2e/__data__/
