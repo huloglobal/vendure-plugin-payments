@@ -7,7 +7,7 @@
     "homepage": "https://huloglobal.com/vendure-plugins/payments/",
     "repository": {
         "type": "git",
-        "url": "https://github.com/exceeded/vendure-plugin-payments.git"
+        "url": "https://github.com/huloglobal/vendure-plugin-payments.git"
     },
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
