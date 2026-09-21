@@ -51,6 +51,9 @@ export const DEFAULT_SETTINGS: Omit<ChannelSettings, 'channelId'> = {
  * failure, renewal and pay-link lands here regardless of provider, which
  * is what makes one dashboard (and one reconciliation) possible. Also owns
  * webhook idempotency, provider customer references and channel settings.
+ *
+ * @docsCategory Services
+ * @category Services
  */
 @Injectable()
 export class LedgerService implements OnModuleInit {

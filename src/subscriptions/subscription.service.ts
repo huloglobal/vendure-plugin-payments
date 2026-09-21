@@ -48,6 +48,9 @@ function intervalMs(interval: string, count: number): number {
  * token, and either the provider bills natively (Stripe, PayPal, Mollie) or
  * the plugin's scheduler charges the stored payment details (Adyen). All
  * of it lands in `hulo_subscription`, with renewals in the ledger.
+ *
+ * @docsCategory Services
+ * @category Services
  */
 @Injectable()
 export class SubscriptionService implements OnModuleInit {

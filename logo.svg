@@ -1,1 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><rect width="64" height="64" rx="14" fill="#050a10"/><rect x="12" y="20" width="40" height="26" rx="4" fill="#1d4ed8"/><rect x="12" y="26" width="40" height="6" fill="#050a10"/><rect x="17" y="36" width="12" height="4" rx="1" fill="#fff"/><circle cx="46" cy="38" r="3.5" fill="#f59e0b"/></svg>
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="14" fill="#0f1419"/>
+  <!-- payment card -->
+  <rect x="11" y="17" width="42" height="28" rx="4.5" fill="none" stroke="#ffffff" stroke-width="2.4"/>
+  <rect x="11" y="24" width="42" height="5.5" fill="#ffffff"/>
+  <rect x="17" y="35" width="11" height="3.5" rx="1.2" fill="#ffffff"/>
+  <!-- contactless / multi-provider arcs -->
+  <path d="M39 33 a6 6 0 0 1 0 8.5 M42.5 30 a10.5 10.5 0 0 1 0 14.5" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="36.2" cy="37.2" r="1.9" fill="#f59e0b"/>
+</svg>

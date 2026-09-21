@@ -27,6 +27,9 @@ export interface OfferedProvider {
  * providers to offer, session creation (with provider customer records for
  * saved cards / subscriptions), and turning verified webhook events into
  * ledger rows and Vendure payment state.
+ *
+ * @docsCategory Services
+ * @category Services
  */
 @Injectable()
 export class PaymentsService {

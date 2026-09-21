@@ -20,7 +20,8 @@
         "logo.svg",
         "hulo-global-logo.svg",
         "hulo-global-logo-light.svg",
-        "hulo-global-logo-dark.svg"
+        "hulo-global-logo-dark.svg",
+        "logo.png"
     ],
     "scripts": {
         "build": "tsc -p tsconfig.json",
