@@ -1,9 +1,11 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { NotificationService, ModalService } from '@vendure/admin-ui/core';
+import { NotificationService, ModalService, getServerLocation } from '@vendure/admin-ui/core';
 
-/** REST prefix shared with the plugin controllers. */
-const API = '/hulo-payments';
+/** REST prefix shared with the plugin controllers — resolved against the
+ *  Vendure server the admin UI is configured for, so it also works when the
+ *  UI is served from another origin or a CDN. */
+const API = `${getServerLocation().replace(/\/$/, '')}/hulo-payments`;
 
 type Tab = 'overview' | 'transactions' | 'subscriptions' | 'paylink' | 'providers' | 'settings';
 
