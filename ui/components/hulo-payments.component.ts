@@ -617,14 +617,14 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
 
     /** Request options that authenticate against the API whether the admin UI
      *  uses cookie sessions (same origin) or bearer tokens (any origin). */
-    private h(extra: any = {}): any {
-        const headers: Record<string, string> = {};
+    private h(extra: { params?: any } = {}): { headers: { [k: string]: string }; withCredentials: boolean; params?: any; observe: 'body'; responseType: 'json' } {
+        const headers: { [k: string]: string } = {};
         try {
             const raw = localStorage.getItem('vnd_authToken');
             const token = raw ? (raw.startsWith('"') ? JSON.parse(raw) : raw) : '';
             if (token) headers['Authorization'] = `Bearer ${token}`;
         } catch { /* storage unavailable */ }
-        return { ...extra, headers: { ...(extra.headers || {}), ...headers }, withCredentials: true };
+        return { ...extra, headers, withCredentials: true, observe: 'body', responseType: 'json' };
     }
 
     ngOnInit() { this.checkClaim(false); this.reloadAll(); }
