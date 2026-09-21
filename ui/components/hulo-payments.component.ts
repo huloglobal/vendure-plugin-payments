@@ -11,6 +11,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
 
 @Component({
     selector: 'hulo-payments',
+    standalone: false,
     template: `
         <!-- ── Hero ────────────────────────────────────────────────── -->
         <vdr-page-block>

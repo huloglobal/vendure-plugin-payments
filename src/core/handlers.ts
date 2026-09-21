@@ -22,40 +22,48 @@ const select = (l: string, options: string[], defaultValue: string, d?: string) 
     ui: { component: 'select-form-input', options: options.map(o => ({ value: o, label: label(o) })) },
 });
 
+/** What admins see in the "Payment handler" dropdown. */
+export const HANDLER_DESCRIPTIONS: Record<ProviderCode, string> = {
+    'hulo-stripe': 'HULO Payments — Stripe (cards, Apple Pay, Google Pay, Link, Klarna; refunds, holds, subscriptions)',
+    'hulo-adyen': 'HULO Payments — Adyen (cards, wallets, iDEAL, Klarna + 100 local methods; captures, refunds, tokenised subscriptions)',
+    'hulo-paypal': 'HULO Payments — PayPal (PayPal, Pay Later, Venmo; authorise or capture, refunds, subscriptions)',
+    'hulo-mollie': 'HULO Payments — Mollie (iDEAL, cards, Bancontact, SEPA, Klarna; refunds, subscriptions)',
+};
+
 /** Handler args per provider — these are the credentials admins fill in on the PaymentMethod. */
 export const HANDLER_ARGS: Record<ProviderCode, ConfigArgs> = {
     'hulo-stripe': {
-        secretKey: secret('Secret key', 'sk_live_… / sk_test_…'),
-        publishableKey: text('Publishable key', 'pk_live_… / pk_test_… (sent to the browser)'),
-        webhookSecret: secret('Webhook signing secret', 'whsec_… for the endpoint /hulo-payments/webhook/hulo-stripe'),
-        captureMethod: select('Capture', ['automatic', 'manual'], 'automatic', 'manual = authorise now, settle later from the order'),
-        paymentMethodTypes: text('Payment method types', 'Leave empty for automatic (Stripe dashboard decides); or e.g. card,link,klarna'),
-        statementDescriptorSuffix: text('Statement descriptor suffix', 'Up to 22 characters shown on card statements'),
+        secretKey: secret('Secret key', 'Stripe Dashboard → Developers → API keys. Starts sk_live_ (or sk_test_ for testing).'),
+        publishableKey: text('Publishable key', 'Same page, starts pk_live_ / pk_test_. Safe to send to the browser.'),
+        webhookSecret: secret('Webhook signing secret', 'Developers → Webhooks → add endpoint <your server>/hulo-payments/webhook/hulo-stripe, then copy its whsec_… secret here. The Payments page shows the exact URL.'),
+        captureMethod: select('Capture', ['automatic', 'manual'], 'automatic', 'automatic = take the money immediately (most shops). manual = reserve now and settle from the order page within 7 days.'),
+        paymentMethodTypes: text('Payment method types', 'Leave empty and Stripe shows whatever is enabled in your dashboard. Or restrict, e.g. card,link,klarna.'),
+        statementDescriptorSuffix: text('Statement descriptor suffix', 'Optional. Up to 22 characters appended on the customer\'s card statement.'),
     },
     'hulo-adyen': {
-        apiKey: secret('API key', 'Checkout API key from the Customer Area'),
-        merchantAccount: text('Merchant account'),
-        clientKey: text('Client key', 'Public key for Drop-in / Components (sent to the browser)'),
-        hmacKey: secret('Webhook HMAC key', 'Hex key from the standard webhook settings'),
-        environment: select('Environment', ['test', 'live'], 'test'),
-        liveUrlPrefix: text('Live URL prefix', 'e.g. 1797a841fbb37ca7-AdyenDemo (live only)'),
-        captureMode: select('Capture', ['immediate', 'manual'], 'immediate', 'manual = captureDelayHours −1; settle from the order'),
-        webhookUser: text('Webhook basic-auth user', 'Optional'),
-        webhookPassword: secret('Webhook basic-auth password', 'Optional'),
+        apiKey: secret('API key', 'Customer Area → Developers → API credentials → your web service user → API key.'),
+        merchantAccount: text('Merchant account', 'Customer Area → Account → Merchant accounts (e.g. YourCompanyECOM).'),
+        clientKey: text('Client key', 'Same API credential page → Client key. Add your storefront origin to its allowed origins. Safe to send to the browser.'),
+        hmacKey: secret('Webhook HMAC key', 'Developers → Webhooks → Standard webhook → URL <your server>/hulo-payments/webhook/hulo-adyen → generate HMAC key and paste the hex here.'),
+        environment: select('Environment', ['test', 'live'], 'test', 'test = test Customer Area credentials; live = production.'),
+        liveUrlPrefix: text('Live URL prefix', 'Live only: Customer Area → Developers → API URLs, the part before -checkout-live.adyenpayments.com.'),
+        captureMode: select('Capture', ['immediate', 'manual'], 'immediate', 'immediate = take the money on authorisation. manual = reserve now and settle from the order page.'),
+        webhookUser: text('Webhook basic-auth user', 'Optional: if you set basic auth on the Adyen webhook, mirror it here.'),
+        webhookPassword: secret('Webhook basic-auth password', 'Optional, pairs with the user above.'),
     },
     'hulo-paypal': {
-        clientId: text('Client ID', 'REST app client id (sent to the browser)'),
-        clientSecret: secret('Client secret'),
-        environment: select('Environment', ['sandbox', 'live'], 'sandbox'),
-        intent: select('Intent', ['CAPTURE', 'AUTHORIZE'], 'CAPTURE', 'AUTHORIZE = hold funds, capture from the order'),
-        webhookId: text('Webhook ID', 'From the REST app webhook for /hulo-payments/webhook/hulo-paypal'),
-        brandName: text('Brand name', 'Shown on the PayPal approval page'),
+        clientId: text('Client ID', 'developer.paypal.com → Apps & Credentials → your REST app → Client ID. Safe to send to the browser.'),
+        clientSecret: secret('Client secret', 'Same app → Secret.'),
+        environment: select('Environment', ['sandbox', 'live'], 'sandbox', 'sandbox = test credentials; live = production app.'),
+        intent: select('Intent', ['CAPTURE', 'AUTHORIZE'], 'CAPTURE', 'CAPTURE = take the money immediately. AUTHORIZE = hold funds and settle from the order page.'),
+        webhookId: text('Webhook ID', 'Same app → Webhooks → add <your server>/hulo-payments/webhook/hulo-paypal with all payment, dispute and billing events → paste its ID.'),
+        brandName: text('Brand name', 'Shown to the customer on the PayPal approval page.'),
     },
     'hulo-mollie': {
-        apiKey: secret('API key', 'live_… / test_…'),
-        profileId: text('Profile ID', 'pfl_… (optional, for Mollie Components)'),
-        method: text('Restrict to methods', 'Optional comma list, e.g. ideal,creditcard,bancontact'),
-        captureMode: select('Capture', ['automatic', 'manual'], 'automatic', 'manual = authorise (cards/Klarna) and capture from the order'),
+        apiKey: secret('API key', 'Mollie Dashboard → Developers → API keys. Starts live_ (or test_ for testing).'),
+        profileId: text('Profile ID', 'Optional, pfl_… from the same page; only needed for Mollie Components.'),
+        method: text('Restrict to methods', 'Leave empty to offer every method enabled in Mollie, or list some, e.g. ideal,creditcard,bancontact.'),
+        captureMode: select('Capture', ['automatic', 'manual'], 'automatic', 'automatic = take the money immediately. manual = authorise (cards, Klarna) and settle from the order page.'),
     },
 };
 
@@ -68,7 +76,7 @@ export const HANDLER_ARGS: Record<ProviderCode, ConfigArgs> = {
 export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
     return new PaymentMethodHandler({
         code: provider.code,
-        description: label(`${provider.name} (HULO Payments)`),
+        description: label(HANDLER_DESCRIPTIONS[provider.code]),
         args: HANDLER_ARGS[provider.code] as any,
 
         init(injector: Injector) {
