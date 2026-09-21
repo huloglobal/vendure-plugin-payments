@@ -615,13 +615,25 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
 
     constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef) {}
 
+    /** Request options that authenticate against the API whether the admin UI
+     *  uses cookie sessions (same origin) or bearer tokens (any origin). */
+    private h(extra: any = {}): any {
+        const headers: Record<string, string> = {};
+        try {
+            const raw = localStorage.getItem('vnd_authToken');
+            const token = raw ? (raw.startsWith('"') ? JSON.parse(raw) : raw) : '';
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+        } catch { /* storage unavailable */ }
+        return { ...extra, headers: { ...(extra.headers || {}), ...headers }, withCredentials: true };
+    }
+
     ngOnInit() { this.checkClaim(false); this.reloadAll(); }
     ngOnDestroy() { this.stopClaimPoll(); }
 
     reloadAll() { this.loadMeta(); this.loadDashboard(); this.go(this.tab); }
 
     loadMeta() {
-        this.http.get<any>(`${API}/meta`).subscribe({ next: m => { this.meta = m; this.loading = false; this.cdr.markForCheck(); }, error: () => { this.loading = false; this.cdr.markForCheck(); } });
+        this.http.get<any>(`${API}/meta`, this.h()).subscribe({ next: m => { this.meta = m; this.loading = false; this.cdr.markForCheck(); }, error: () => { this.loading = false; this.cdr.markForCheck(); } });
     }
 
     go(t: Tab) {
@@ -647,14 +659,14 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     }
     loadLinks() { this.http.get<any>(`${API}/transactions`, { params: { kind: 'paylink', perPage: '20' } }).subscribe({ next: t => { this.links = t; this.cdr.markForCheck(); }, error: () => undefined }); }
     loadProviders() {
-        this.http.get<any>(`${API}/providers`).subscribe({ next: p => { this.providers = p; this.cdr.markForCheck(); }, error: () => undefined });
-        this.http.get<any[]>(`${API}/events`).subscribe({ next: e => { this.events = e; this.cdr.markForCheck(); }, error: () => undefined });
+        this.http.get<any>(`${API}/providers`, this.h()).subscribe({ next: p => { this.providers = p; this.cdr.markForCheck(); }, error: () => undefined });
+        this.http.get<any[]>(`${API}/events`, this.h()).subscribe({ next: e => { this.events = e; this.cdr.markForCheck(); }, error: () => undefined });
     }
-    loadSettings() { this.http.get<any[]>(`${API}/settings`).subscribe({ next: s => { this.settingsList = s; this.cfg = s[this.cfgIdx] || s[0]; this.cdr.markForCheck(); }, error: () => undefined }); }
+    loadSettings() { this.http.get<any[]>(`${API}/settings`, this.h()).subscribe({ next: s => { this.settingsList = s; this.cfg = s[this.cfgIdx] || s[0]; this.cdr.markForCheck(); }, error: () => undefined }); }
 
     saveSettings() {
         this.busy = true;
-        this.http.post<any>(`${API}/settings`, this.cfg).subscribe({
+        this.http.post<any>(`${API}/settings`, this.cfg, this.h()).subscribe({
             next: () => { this.busy = false; this.notification.success('Settings saved'); this.cdr.markForCheck(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not save settings')); this.cdr.markForCheck(); },
         });
@@ -672,7 +684,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
 
     subAction(s: any, action: 'pause' | 'resume') {
         this.busy = true;
-        this.http.post<any>(`${API}/subscriptions/${s.id}/${action}`, {}).subscribe({
+        this.http.post<any>(`${API}/subscriptions/${s.id}/${action}`, {}, this.h()).subscribe({
             next: () => { this.busy = false; this.loadSubs(); this.loadDashboard(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, `Could not ${action}`)); this.cdr.markForCheck(); },
         });
@@ -681,14 +693,14 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         const atEnd = await this.confirm('Cancel subscription', `Cancel ${s.variantName} for ${s.customerEmail}?`, 'At period end', 'primary');
         if (atEnd === null) return;
         this.busy = true;
-        this.http.post<any>(`${API}/subscriptions/${s.id}/cancel`, { atPeriodEnd: atEnd }).subscribe({
+        this.http.post<any>(`${API}/subscriptions/${s.id}/cancel`, { atPeriodEnd: atEnd }, this.h()).subscribe({
             next: () => { this.busy = false; this.notification.success(atEnd ? 'Will cancel at the end of the paid period' : 'Subscription cancelled'); this.loadSubs(); this.loadDashboard(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not cancel')); this.cdr.markForCheck(); },
         });
     }
     runScheduler() {
         this.busy = true;
-        this.http.post<any>(`${API}/scheduler/run`, {}).subscribe({
+        this.http.post<any>(`${API}/scheduler/run`, {}, this.h()).subscribe({
             next: r => { this.busy = false; this.notification.success(`Renewals: ${r.charged} charged, ${r.failed} failed, ${r.canceled} ended`); this.loadSubs(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Scheduler failed')); this.cdr.markForCheck(); },
         });
@@ -697,7 +709,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     linkProviders(): any[] { return (this.dash?.providers || []).filter((p: any) => p.configured && p.capabilities.payByLink); }
     createLink() {
         this.busy = true; this.link = null; this.copied = false;
-        this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), methodCode: this.linkProvider || undefined, expiresInHours: this.linkHours }).subscribe({
+        this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), methodCode: this.linkProvider || undefined, expiresInHours: this.linkHours }, this.h()).subscribe({
             next: r => { this.busy = false; this.link = r; this.loadLinks(); this.cdr.markForCheck(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not create the link')); this.cdr.markForCheck(); },
         });
@@ -751,7 +763,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
 
     buyLicence() {
         this.buying = true;
-        this.http.post<any>(`${API}/licence/purchase-link`, { plan: this.buyPlan }).subscribe({
+        this.http.post<any>(`${API}/licence/purchase-link`, { plan: this.buyPlan }, this.h()).subscribe({
             next: r => {
                 this.buying = false;
                 if (r?.url) {
@@ -801,7 +813,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
 
     openPortal() {
         this.portalOpening = true;
-        this.http.post<any>(`${API}/licence/portal-link`, {}).subscribe({
+        this.http.post<any>(`${API}/licence/portal-link`, {}, this.h()).subscribe({
             next: r => { this.portalOpening = false; if (r?.url) window.open(r.url, '_blank', 'noopener'); this.cdr.markForCheck(); },
             error: e => { this.portalOpening = false; this.notification.error(this.errMsg(e, 'Could not open the billing portal')); this.cdr.markForCheck(); },
         });
@@ -811,7 +823,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         const key = (this.licenceKeyInput || '').trim();
         if (!key) return;
         this.activating = true;
-        this.http.post<any>(`${API}/licence/activate`, { key }).subscribe({
+        this.http.post<any>(`${API}/licence/activate`, { key }, this.h()).subscribe({
             next: r => {
                 this.activating = false;
                 this.licenceKeyInput = '';
