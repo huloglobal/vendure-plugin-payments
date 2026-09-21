@@ -15,4 +15,5 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - **Subscriptions** from product-variant custom fields: native billing on Stripe, PayPal and Mollie, scheduler-billed renewals for Adyen, dunning, MRR, customer self-service.
 - **Pay by link** for any unpaid order from the admin (Stripe Checkout, Adyen Pay by Link, PayPal approve links, Mollie Payment Links).
 - **Routing and rules.** Provider order per channel with fallback, the `hulo-payment-rules` eligibility checker, optional surcharges.
+- **One-step Connect** on every provider card: verifies the keys with the provider, creates the webhook through the provider's API (Stripe, PayPal, Adyen Management API) and stores its secret, then creates the Vendure payment method — with links straight into each provider's dashboard, API keys and webhook pages.
 - **Ledger and dashboard** under Sales → Payments: volume by provider and day, success rate, refunds, disputes, subscriptions, webhook log, settings, licence card.

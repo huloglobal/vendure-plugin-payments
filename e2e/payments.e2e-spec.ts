@@ -91,6 +91,24 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         expect((await ledger().stats(null, 30)).totals.disputes).toBe(1);
     });
 
+    it('connect validates keys before touching the provider and exposes connect metadata', async () => {
+        const token = (adminClient as any).getAuthToken?.() as string | undefined;
+        const headers = { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) };
+        const test = await fetch(`${BASE}/hulo-payments/connect/hulo-stripe/test`, { method: 'POST', headers, body: JSON.stringify({ args: { secretKey: 'nope', publishableKey: 'pk_test_x' } }) });
+        expect(test.status).toBe(200);
+        const body: any = await test.json();
+        expect(body.ok).toBe(false);
+        expect(body.message).toMatch(/sk_live_ or sk_test_/);
+        const connect = await fetch(`${BASE}/hulo-payments/connect/hulo-stripe`, { method: 'POST', headers, body: JSON.stringify({ channelId: 1, args: { secretKey: 'sk_test_x', publishableKey: 'pk_live_x' } }) });
+        expect(connect.status).toBe(400);
+        expect(((await connect.json()) as any).message).toMatch(/same mode/);
+        const providers: any = await (await fetch(`${BASE}/hulo-payments/providers`, { headers })).json();
+        const stripe = providers.providers.find((p: any) => p.code === 'hulo-stripe');
+        expect(stripe.connectFields.map((f: any) => f.name)).toEqual(['secretKey', 'publishableKey', 'captureMethod']);
+        expect(stripe.links.keys).toContain('dashboard.stripe.com');
+        expect(providers.channels[0].id).toBe(1);
+    });
+
     it('unknown providers are refused', async () => {
         expect((await fetch(`${BASE}/hulo-payments/webhook/hulo-nope`, { method: 'POST', body: '{}' })).status).toBe(404);
     });

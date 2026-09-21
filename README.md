@@ -65,11 +65,19 @@ plugins: [
 ]
 ```
 
-Then in the admin: **Settings → Payment methods → Create**, pick the
-handler *Stripe / Adyen / PayPal / Mollie (HULO Payments)*, paste the keys.
-Copy the webhook URL shown under **Sales → Payments → Providers** into the
-provider dashboard. Tables are created on boot; no migration is needed
-beyond Vendure's own for the three subscription custom fields on
+Then open **Sales → Payments → Providers** and click **Connect** on a
+provider: paste the keys from its dashboard (linked from the card), click
+*Test connection* to see which account they belong to, then *Connect*. The
+plugin verifies the keys with the provider, registers the webhook itself
+(Stripe, PayPal, and Adyen when the credential has the Management API
+webhook role), stores the signing secret, and creates the Vendure payment
+method on the channel you chose — nothing to copy back by hand. Mollie
+needs no webhook setup at all.
+
+Prefer the standard route? **Settings → Payment methods → Create** and pick
+the handler *HULO Payments — Stripe / Adyen / PayPal / Mollie*; every field
+explains where to find its value. Tables are created on boot; the only
+migration is Vendure's own for the three subscription custom fields on
 `ProductVariant` (`npx vendure migrate` on installs that use migrations).
 
 ## Storefront

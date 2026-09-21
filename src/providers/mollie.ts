@@ -4,6 +4,7 @@ import {
     SubscriptionCreateInput, SubscriptionOutcome, WebhookVerification,
 } from '../core/provider';
 import { idem, request } from '../core/rest';
+import type { CredentialCheck } from '../core/provider';
 import { fromDecimalString, toDecimalString } from '../core/money';
 import { getRuntime } from '../core/runtime';
 
@@ -44,6 +45,24 @@ export const mollieProvider: PaymentProvider = {
 
     publicConfig(args) {
         return { profileId: args.profileId || null, environment: String(args.apiKey || '').startsWith('live_') ? 'live' : 'test' };
+    },
+
+    connectFields: ['apiKey', 'captureMode'],
+
+    dashboardLinks() {
+        return { dashboard: 'https://my.mollie.com/dashboard/', keys: 'https://my.mollie.com/dashboard/developers/api-keys', docs: 'https://docs.mollie.com/reference/authentication' };
+    },
+
+    async verifyCredentials(args): Promise<CredentialCheck> {
+        const key = String(args.apiKey || '');
+        if (!/^(live|test)_/.test(key)) return { ok: false, message: 'The API key should start with live_ or test_ (Developers → API keys).' };
+        try {
+            const r = await mollie(args, '/methods');
+            const n = (r._embedded?.methods || []).length;
+            return { ok: true, message: `Connected to Mollie (${key.startsWith('live_') ? 'live' : 'test'}) — ${n} payment method${n === 1 ? '' : 's'} active on the profile. Webhooks need no setup with Mollie.`, environment: key.startsWith('live_') ? 'live' : 'test' };
+        } catch (e: any) {
+            return { ok: false, message: e.status === 401 ? 'Mollie rejected the API key.' : e.message };
+        }
     },
 
     async createSession(_ctx: RequestContext, order: Order, args: ProviderArgs, opts: SessionOptions): Promise<ClientSession> {

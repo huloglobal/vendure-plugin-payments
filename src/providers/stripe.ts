@@ -5,6 +5,7 @@ import {
     SavedMethod, SessionOptions, SubscriptionCreateInput, SubscriptionOutcome, SubscriptionPlanInput, WebhookVerification,
 } from '../core/provider';
 import { idem, request, safeEqual } from '../core/rest';
+import type { CredentialCheck, WebhookSetup } from '../core/provider';
 import { fromProviderMinor, toProviderMinor } from '../core/money';
 
 const API = 'https://api.stripe.com/v1';
@@ -45,6 +46,41 @@ export const stripeProvider: PaymentProvider = {
 
     publicConfig(args) {
         return { publishableKey: args.publishableKey, environment: String(args.secretKey || '').startsWith('sk_live') ? 'live' : 'test' };
+    },
+
+    connectFields: ['secretKey', 'publishableKey', 'captureMethod'],
+
+    dashboardLinks(args) {
+        const test = !String(args?.secretKey || '').startsWith('sk_live');
+        const base = test ? 'https://dashboard.stripe.com/test' : 'https://dashboard.stripe.com';
+        return { dashboard: base, keys: `${base}/apikeys`, webhooks: `${base}/webhooks`, docs: 'https://docs.stripe.com/keys' };
+    },
+
+    async verifyCredentials(args): Promise<CredentialCheck> {
+        const sk = String(args.secretKey || ''); const pk = String(args.publishableKey || '');
+        if (!/^(sk|rk)_(live|test)_/.test(sk)) return { ok: false, message: 'The secret key should start with sk_live_ or sk_test_ (Developers → API keys).' };
+        if (pk && !/^pk_(live|test)_/.test(pk)) return { ok: false, message: 'The publishable key should start with pk_live_ or pk_test_.' };
+        const env = sk.includes('_live_') ? 'live' : 'test';
+        if (pk && !pk.includes(`_${env}_`)) return { ok: false, message: `The publishable key is for ${pk.includes('_live_') ? 'live' : 'test'} mode but the secret key is ${env} — use the pair from the same mode.` };
+        try {
+            const acct = await stripe(args, '/account');
+            const name = acct.business_profile?.name || acct.settings?.dashboard?.display_name || acct.email || acct.id;
+            return { ok: true, message: `Connected to ${name} (${env})${acct.charges_enabled === false ? ' — charges are not enabled on this account yet' : ''}.`, account: name, environment: env };
+        } catch (e: any) {
+            return { ok: false, message: e.status === 401 ? 'Stripe rejected the secret key.' : e.message };
+        }
+    },
+
+    async ensureWebhook(args, url): Promise<WebhookSetup> {
+        const events = ['payment_intent.succeeded', 'payment_intent.amount_capturable_updated', 'payment_intent.payment_failed', 'payment_intent.canceled', 'charge.refunded', 'charge.refund.updated', 'charge.dispute.created', 'charge.dispute.closed', 'checkout.session.completed', 'invoice.paid', 'invoice.payment_failed', 'customer.subscription.updated', 'customer.subscription.deleted', 'customer.subscription.paused'];
+        const list = await stripe(args, '/webhook_endpoints?limit=100');
+        // A secret can only be read at creation, so an existing endpoint for our URL is replaced.
+        for (const ep of (list.data || []).filter((e: any) => e.url === url)) {
+            if (args.webhookSecret && ep.metadata?.hulo === '1') return { args: {}, ref: ep.id, note: 'Existing webhook kept.' };
+            await stripe(args, `/webhook_endpoints/${ep.id}`, { method: 'DELETE' }).catch(() => undefined);
+        }
+        const ep = await stripe(args, '/webhook_endpoints', { form: { url, description: 'HULO Payments for Vendure', enabled_events: events, metadata: { hulo: '1' } } });
+        return { args: { webhookSecret: ep.secret }, ref: ep.id };
     },
 
     async createSession(ctx: RequestContext, order: Order, args: ProviderArgs, opts: SessionOptions): Promise<ClientSession> {

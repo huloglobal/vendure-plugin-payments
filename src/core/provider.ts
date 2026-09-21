@@ -170,6 +170,26 @@ export interface PayLinkOutcome { url: string; ref: string; expiresAt?: string }
 
 export interface SavedMethod { id: string; brand?: string; last4?: string; expiry?: string; type: string; provider: ProviderCode }
 
+export interface CredentialCheck {
+    ok: boolean;
+    message: string;
+    /** Account / merchant name as the provider reports it. */
+    account?: string;
+    environment?: string;
+}
+
+/** What `ensureWebhook` was able to set up; missing pieces come with a note for the admin. */
+export interface WebhookSetup {
+    /** Handler args to merge (webhookSecret, webhookId, hmacKey …). */
+    args: Partial<ProviderArgs>;
+    /** Provider-side reference of the webhook (endpoint id). */
+    ref?: string;
+    /** Human note when something must still be done by hand. */
+    note?: string;
+}
+
+export interface DashboardLinks { dashboard: string; keys?: string; webhooks?: string; docs?: string }
+
 /**
  * The single contract every provider implements. Handlers, webhooks, the
  * shop API and the subscription engine only talk to this interface.
@@ -182,6 +202,14 @@ export interface PaymentProvider {
     freeTier: boolean;
     /** Public config for storefronts (never secrets). */
     publicConfig(args: ProviderArgs): Record<string, any>;
+    /** Deep links into the provider's dashboard for the given credentials / environment. */
+    dashboardLinks(args: ProviderArgs): DashboardLinks;
+    /** Which handler args the Connect form asks for (the rest get defaults). */
+    connectFields: string[];
+    /** Call the provider with the supplied credentials and report what account they belong to. */
+    verifyCredentials(args: ProviderArgs): Promise<CredentialCheck>;
+    /** Create (or reuse) the provider-side webhook pointing at `url`; returns args to store. */
+    ensureWebhook?(args: ProviderArgs, url: string): Promise<WebhookSetup>;
     createSession(ctx: RequestContext, order: Order, args: ProviderArgs, opts: SessionOptions): Promise<ClientSession>;
     /** Verify the client-reported result server-side and decide the payment state. */
     confirmPayment(ctx: RequestContext, order: Order, args: ProviderArgs, metadata: Record<string, any>): Promise<PaymentOutcome>;

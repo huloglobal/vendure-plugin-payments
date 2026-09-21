@@ -4,6 +4,7 @@ import {
     SubscriptionCreateInput, SubscriptionOutcome, SubscriptionPlanInput, WebhookVerification,
 } from '../core/provider';
 import { idem, request } from '../core/rest';
+import type { CredentialCheck, WebhookSetup } from '../core/provider';
 import { fromDecimalString, toDecimalString } from '../core/money';
 
 export const PAYPAL_CODE = 'hulo-paypal' as const;
@@ -52,6 +53,33 @@ export const paypalProvider: PaymentProvider = {
 
     publicConfig(args) {
         return { clientId: args.clientId, environment: String(args.environment) === 'live' ? 'live' : 'sandbox', intent: String(args.intent || 'CAPTURE').toLowerCase() };
+    },
+
+    connectFields: ['environment', 'clientId', 'clientSecret', 'intent', 'brandName'],
+
+    dashboardLinks(args) {
+        const live = String(args?.environment) === 'live';
+        return { dashboard: live ? 'https://www.paypal.com/businessmanage/account/aboutBusiness' : 'https://www.sandbox.paypal.com/', keys: 'https://developer.paypal.com/dashboard/applications/' + (live ? 'live' : 'sandbox'), webhooks: 'https://developer.paypal.com/dashboard/applications/' + (live ? 'live' : 'sandbox'), docs: 'https://developer.paypal.com/api/rest/' };
+    },
+
+    async verifyCredentials(args): Promise<CredentialCheck> {
+        if (!args.clientId || !args.clientSecret) return { ok: false, message: 'Client ID and secret are both required.' };
+        try {
+            tokens.delete(`${args.environment}|${args.clientId}`);
+            await accessToken(args);
+            return { ok: true, message: `Connected to the PayPal REST app (${String(args.environment) === 'live' ? 'live' : 'sandbox'}).`, environment: String(args.environment) === 'live' ? 'live' : 'sandbox' };
+        } catch (e: any) {
+            return { ok: false, message: e.status === 401 ? 'PayPal rejected the client ID / secret pair.' : e.message };
+        }
+    },
+
+    async ensureWebhook(args, url): Promise<WebhookSetup> {
+        const events = ['CHECKOUT.ORDER.APPROVED', 'PAYMENT.CAPTURE.COMPLETED', 'PAYMENT.CAPTURE.DENIED', 'PAYMENT.CAPTURE.PENDING', 'PAYMENT.CAPTURE.REFUNDED', 'PAYMENT.CAPTURE.REVERSED', 'PAYMENT.AUTHORIZATION.CREATED', 'PAYMENT.AUTHORIZATION.VOIDED', 'CUSTOMER.DISPUTE.CREATED', 'CUSTOMER.DISPUTE.RESOLVED', 'BILLING.SUBSCRIPTION.ACTIVATED', 'BILLING.SUBSCRIPTION.CANCELLED', 'BILLING.SUBSCRIPTION.EXPIRED', 'BILLING.SUBSCRIPTION.SUSPENDED', 'BILLING.SUBSCRIPTION.RE-ACTIVATED', 'BILLING.SUBSCRIPTION.UPDATED', 'BILLING.SUBSCRIPTION.PAYMENT.FAILED', 'PAYMENT.SALE.COMPLETED'];
+        const list = await paypal(args, '/v1/notifications/webhooks');
+        const hook = (list.webhooks || []).find((w: any) => w.url === url);
+        if (hook) return { args: { webhookId: hook.id }, ref: hook.id, note: 'Existing webhook kept.' };
+        const created = await paypal(args, '/v1/notifications/webhooks', { json: { url, event_types: events.map(name => ({ name })) } });
+        return { args: { webhookId: created.id }, ref: created.id };
     },
 
     async createSession(_ctx: RequestContext, order: Order, args: ProviderArgs, opts: SessionOptions): Promise<ClientSession> {

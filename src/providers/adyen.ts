@@ -5,6 +5,7 @@ import {
     SubscriptionCreateInput, SubscriptionOutcome, WebhookVerification,
 } from '../core/provider';
 import { idem, request, safeEqual } from '../core/rest';
+import type { CredentialCheck, WebhookSetup } from '../core/provider';
 import { fromProviderMinor, toProviderMinor } from '../core/money';
 
 export const ADYEN_CODE = 'hulo-adyen' as const;
@@ -50,6 +51,46 @@ export const adyenProvider: PaymentProvider = {
 
     publicConfig(args) {
         return { clientKey: args.clientKey, environment: String(args.environment) === 'live' ? 'live' : 'test' };
+    },
+
+    connectFields: ['environment', 'apiKey', 'merchantAccount', 'clientKey', 'liveUrlPrefix', 'captureMode'],
+
+    dashboardLinks(args) {
+        const live = String(args?.environment) === 'live';
+        const base = live ? 'https://ca-live.adyen.com/ca/ca' : 'https://ca-test.adyen.com/ca/ca';
+        return { dashboard: base, keys: `${base}/config/api_credentials_new.shtml`, webhooks: `${base}/config/showthirdparty.shtml`, docs: 'https://docs.adyen.com/development-resources/api-credentials/' };
+    },
+
+    async verifyCredentials(args): Promise<CredentialCheck> {
+        if (!args.apiKey || !args.merchantAccount) return { ok: false, message: 'API key and merchant account are both required.' };
+        if (String(args.environment) === 'live' && !args.liveUrlPrefix) return { ok: false, message: 'Live needs the live URL prefix from Developers → API URLs.' };
+        try {
+            const r = await adyen(args, '/paymentMethods', { json: { merchantAccount: args.merchantAccount, channel: 'Web', amount: { value: 1000, currency: 'GBP' }, countryCode: 'GB' } });
+            const n = (r.paymentMethods || []).length;
+            return { ok: true, message: `Connected to merchant account ${args.merchantAccount} (${args.environment || 'test'}) — ${n} payment method${n === 1 ? '' : 's'} enabled.${args.clientKey ? '' : ' Add the client key so Drop-in can render.'}`, account: String(args.merchantAccount), environment: String(args.environment || 'test') };
+        } catch (e: any) {
+            return { ok: false, message: e.status === 401 ? 'Adyen rejected the API key.' : e.status === 403 ? 'The API credential is not allowed to use this merchant account.' : e.message };
+        }
+    },
+
+    /** Uses the Management API (needs the "Management API — Webhooks read and write" role on the credential). */
+    async ensureWebhook(args, url): Promise<WebhookSetup> {
+        const mgmt = String(args.environment) === 'live' ? 'https://management-live.adyen.com/v3' : 'https://management-test.adyen.com/v3';
+        const headers = { 'x-api-key': String(args.apiKey || '') };
+        const manual = `Create a Standard webhook in the Customer Area pointing at ${url}, generate its HMAC key and paste it into the payment method.`;
+        try {
+            const list = await request('Adyen', `${mgmt}/merchants/${encodeURIComponent(args.merchantAccount)}/webhooks?pageSize=100`, { headers });
+            let hook = (list.data || []).find((w: any) => w.url === url);
+            if (!hook) {
+                hook = await request('Adyen', `${mgmt}/merchants/${encodeURIComponent(args.merchantAccount)}/webhooks`, { headers, json: { type: 'standard', url, active: true, communicationFormat: 'json', description: 'HULO Payments for Vendure', sslVersion: 'TLSv1.3', additionalSettings: { includeEventCodes: [], properties: { recurringDetailReference: true, shopperReference: true } } } });
+            } else if (args.hmacKey) {
+                return { args: {}, ref: hook.id, note: 'Existing webhook kept.' };
+            }
+            const hmac = await request('Adyen', `${mgmt}/merchants/${encodeURIComponent(args.merchantAccount)}/webhooks/${hook.id}/generateHmac`, { headers, json: {} });
+            return { args: { hmacKey: hmac.hmacKey }, ref: hook.id };
+        } catch (e: any) {
+            return { args: {}, note: `${e.status === 401 || e.status === 403 ? 'The API credential lacks the Management API webhook role, so the webhook was not created automatically.' : e.message} ${manual}` };
+        }
     },
 
     async createSession(ctx: RequestContext, order: Order, args: ProviderArgs, opts: SessionOptions): Promise<ClientSession> {

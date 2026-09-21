@@ -1,7 +1,8 @@
 import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
-import { Ctx, OrderService, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
+import { Ctx, LanguageCode, OrderService, PaymentMethodService, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import type { Response } from 'express';
-import { allProviders, getProvider } from './provider';
+import { allProviders, getProvider, ProviderArgs } from './provider';
+import { HANDLER_ARGS } from './handlers';
 import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from './credentials';
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
@@ -28,7 +29,18 @@ export class HuloPaymentsAdminController {
         private ledger: LedgerService,
         private payments: PaymentsService,
         private subscriptions: SubscriptionService,
+        private paymentMethodService: PaymentMethodService,
     ) {}
+
+    /** Field metadata for the Connect form, derived from the handler args so labels stay in one place. */
+    private connectFields(code: string) {
+        const provider = getProvider(code);
+        const defs: any = (HANDLER_ARGS as any)[code] || {};
+        return (provider?.connectFields || []).map(name => {
+            const d = defs[name] || {};
+            return { name, label: d.label?.[0]?.value || name, description: d.description?.[0]?.value || '', secret: d.ui?.component === 'password-form-input', options: d.ui?.options?.map((o: any) => o.value) || null, defaultValue: d.defaultValue ?? '' };
+        });
+    }
 
     @Get('dashboard')
     async dashboard(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
@@ -59,12 +71,18 @@ export class HuloPaymentsAdminController {
         clearCredentialCache();
         const methods = await listHuloMethods(this.connection);
         const base = getRuntime().publicBaseUrl().replace(/\/$/, '');
+        const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel ORDER BY id`).catch(() => []);
         return res.json({
             webhookBase: `${base}/hulo-payments/webhook/`,
-            providers: allProviders().map(p => ({
-                code: p.code, name: p.name, freeTier: p.freeTier, capabilities: p.capabilities, webhookUrl: `${base}/hulo-payments/webhook/${p.code}`,
-                methods: methods.filter(m => m.handlerCode === p.code).map(m => ({ id: m.paymentMethodId, code: m.paymentMethodCode, enabled: m.enabled, channelIds: m.channelIds, args: redactArgs(m.args), environment: p.publicConfig(m.args).environment })),
-            })),
+            channels: channels.map(c => ({ id: Number(c.id), code: c.code })),
+            providers: allProviders().map(p => {
+                const mine = methods.filter(m => m.handlerCode === p.code);
+                return {
+                    code: p.code, name: p.name, freeTier: p.freeTier, capabilities: p.capabilities, webhookUrl: `${base}/hulo-payments/webhook/${p.code}`,
+                    links: p.dashboardLinks(mine[0]?.args || {}), connectFields: this.connectFields(p.code),
+                    methods: mine.map(m => ({ id: m.paymentMethodId, code: m.paymentMethodCode, enabled: m.enabled, channelIds: m.channelIds, args: redactArgs(m.args), environment: p.publicConfig(m.args).environment, webhookConfigured: !!(m.args.webhookSecret || m.args.hmacKey || m.args.webhookId || p.code === 'hulo-mollie') })),
+                };
+            }),
         });
     }
 
@@ -113,6 +131,62 @@ export class HuloPaymentsAdminController {
     async runScheduler(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, true)) return;
         try { requirePremium('Subscriptions'); return res.json(await this.subscriptions.runScheduler()); } catch (e) { return fail(res, e); }
+    }
+
+    /** Check credentials with the provider without saving anything. */
+    @Post('connect/:provider/test')
+    async connectTest(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('provider') code: string, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const provider = getProvider(code);
+        if (!provider) return res.status(404).json({ error: 'unknown provider' });
+        try { return res.status(200).json(await provider.verifyCredentials(this.withDefaults(code, body?.args || {}))); }
+        catch (e) { return fail(res, e); }
+    }
+
+    /**
+     * One-step connect: verify the credentials, register the webhook with the
+     * provider (where its API allows it) and create or update the Vendure
+     * payment method on the chosen channel. The admin never leaves the page.
+     */
+    @Post('connect/:provider')
+    async connect(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('provider') code: string, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!ctx.userHasPermissions([Permission.CreatePaymentMethod]) && !ctx.userHasPermissions([Permission.UpdatePaymentMethod])) return res.status(403).json({ error: 'forbidden' });
+        const provider = getProvider(code);
+        if (!provider) return res.status(404).json({ error: 'unknown provider' });
+        if (!provider.freeTier && !getRuntime().hasPremiumAccess()) return res.status(402).json({ error: 'licence-required', message: `${provider.name} needs a HULO Payments licence`, buyUrl: 'https://huloglobal.com/vendure-plugins/payments/' });
+        try {
+            const channelId = Number(body?.channelId) || (ctx.channelId as number);
+            const existing = (await listHuloMethods(this.connection, channelId)).find(m => m.handlerCode === code && m.channelIds.includes(channelId));
+            let args = this.withDefaults(code, { ...(existing?.args || {}), ...(body?.args || {}) });
+            const check = await provider.verifyCredentials(args);
+            if (!check.ok) return res.status(400).json({ ok: false, step: 'verify', message: check.message });
+            let webhook: any = null;
+            if (provider.ensureWebhook) {
+                const url = `${getRuntime().publicBaseUrl().replace(/\/$/, '')}/hulo-payments/webhook/${code}`;
+                try { webhook = await provider.ensureWebhook(args, url); args = { ...args, ...webhook.args }; }
+                catch (e: any) { webhook = { args: {}, note: `Webhook not created: ${e.message}. Add ${url} in the provider dashboard and paste its secret into the payment method.` }; }
+            }
+            const adminCtx = await this.payments.adminCtx(channelId);
+            const handler = { code, arguments: Object.entries(args).map(([name, value]) => ({ name, value: String(value ?? '') })) };
+            const name = String(body?.name || existing?.paymentMethodCode || `${provider.name} (HULO Payments)`).slice(0, 120);
+            const methodCode = String(body?.code || existing?.paymentMethodCode || `${code.replace('hulo-', '')}${channelId > 1 ? `-ch${channelId}` : ''}`).slice(0, 60);
+            let method: any;
+            if (existing) {
+                method = await this.paymentMethodService.update(adminCtx, { id: existing.paymentMethodId, enabled: body?.enabled !== false, handler, translations: [{ languageCode: LanguageCode.en, name }] } as any);
+            } else {
+                method = await this.paymentMethodService.create(adminCtx, { code: methodCode, enabled: body?.enabled !== false, handler, translations: [{ languageCode: LanguageCode.en, name, description: '' }] } as any);
+            }
+            clearCredentialCache();
+            return res.status(200).json({ ok: true, message: check.message, account: check.account, environment: check.environment, webhook: webhook ? { ref: webhook.ref || null, note: webhook.note || null, configured: !!(args.webhookSecret || args.hmacKey || args.webhookId) } : { configured: true, note: 'No webhook configuration is needed for this provider.' }, method: { id: method.id, code: method.code, enabled: method.enabled, channelId, updated: !!existing } });
+        } catch (e) { return fail(res, e); }
+    }
+
+    private withDefaults(code: string, args: ProviderArgs): ProviderArgs {
+        const defs: any = (HANDLER_ARGS as any)[code] || {};
+        const out: ProviderArgs = {};
+        for (const [name, def] of Object.entries<any>(defs)) out[name] = args[name] !== undefined && args[name] !== null ? args[name] : (def.defaultValue ?? '');
+        return out;
     }
 
     /** Pay-by-link for any order that still needs payment (draft orders, quotes, phone orders). */

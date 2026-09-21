@@ -272,12 +272,40 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                         <span class="cap" [class.on]="p.capabilities.session">hosted session</span><span class="cap" [class.on]="p.capabilities.manualCapture">manual capture</span><span class="cap" [class.on]="p.capabilities.partialRefund">partial refunds</span><span class="cap" [class.on]="p.capabilities.savedMethods">saved cards</span><span class="cap" [class.on]="p.capabilities.subscriptions">subscriptions</span><span class="cap" [class.on]="p.capabilities.payByLink">pay by link</span><span class="cap" [class.on]="p.capabilities.disputes">disputes</span>
                     </div>
                     <div class="small muted">Wallets: {{ p.capabilities.wallets.join(', ') }}</div>
-                    <div style="margin-top:8px"><span class="lbl">Webhook URL</span><div class="url">{{ p.webhookUrl }}</div></div>
+                    <div class="picker small" style="margin-top:8px">
+                        <a [href]="p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>
+                        <a *ngIf="p.links.keys" [href]="p.links.keys" target="_blank" rel="noopener">API keys ↗</a>
+                        <a *ngIf="p.links.webhooks" [href]="p.links.webhooks" target="_blank" rel="noopener">Webhooks ↗</a>
+                        <a *ngIf="p.links.docs" [href]="p.links.docs" target="_blank" rel="noopener">Docs ↗</a>
+                    </div>
                     <table class="table" *ngIf="p.methods.length" style="margin-top:8px">
-                        <thead><tr><th>Method</th><th>Env</th><th>Channels</th><th>Enabled</th></tr></thead>
-                        <tbody><tr *ngFor="let m of p.methods"><td><a [routerLink]="['/settings', 'payment-methods', m.id]">{{ m.code }}</a></td><td>{{ m.environment }}</td><td>{{ m.channelIds.join(', ') || 'all' }}</td><td><span class="pill" [class.ok]="m.enabled">{{ m.enabled ? 'on' : 'off' }}</span></td></tr></tbody>
+                        <thead><tr><th>Method</th><th>Env</th><th>Channels</th><th>Webhook</th><th>Enabled</th></tr></thead>
+                        <tbody><tr *ngFor="let m of p.methods"><td><a [routerLink]="['/settings', 'payment-methods', m.id]">{{ m.code }}</a></td><td>{{ m.environment }}</td><td>{{ channelNames(m.channelIds) }}</td><td><span class="pill" [class.ok]="m.webhookConfigured" [class.pending]="!m.webhookConfigured">{{ m.webhookConfigured ? 'configured' : 'missing' }}</span></td><td><span class="pill" [class.ok]="m.enabled">{{ m.enabled ? 'on' : 'off' }}</span></td></tr></tbody>
                     </table>
-                    <div class="picker" style="margin-top:10px"><a [routerLink]="['/settings', 'payment-methods', 'create']" class="gbtn gbtn-outline gbtn-sm">{{ p.methods.length ? 'Add another' : 'Set up ' + p.name }} →</a></div>
+                    <div class="picker" style="margin-top:10px">
+                        <button class="gbtn gbtn-primary gbtn-sm" (click)="openConnect(p)" [disabled]="!p.freeTier && !dash?.premium">{{ connectFor === p.code ? 'Close' : (p.methods.length ? 'Reconnect / update keys' : 'Connect ' + p.name + ' →') }}</button>
+                    </div>
+                    <div *ngIf="connectFor === p.code" class="connect-panel">
+                        <p class="hint" style="margin:0 0 10px">Paste the keys from the <a [href]="p.links.keys || p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>. Connect checks them with {{ p.name }}, {{ p.code === 'hulo-mollie' ? 'needs no webhook setup' : 'registers the webhook for you' }}, and creates the payment method — nothing to copy back by hand.</p>
+                        <div class="form-grid">
+                            <div class="form-row"><label>Channel</label><select class="form-select" [(ngModel)]="connectChannel"><option *ngFor="let c of providers.channels" [ngValue]="c.id">{{ c.code === '__default_channel__' ? 'Default channel' : c.code }}</option></select></div>
+                            <div class="form-row" *ngFor="let f of p.connectFields">
+                                <label>{{ f.label }}</label>
+                                <select class="form-select" *ngIf="f.options" [(ngModel)]="connectArgs[f.name]"><option *ngFor="let o of f.options" [value]="o">{{ o }}</option></select>
+                                <input class="form-input" *ngIf="!f.options" [type]="f.secret ? 'password' : 'text'" autocomplete="off" [(ngModel)]="connectArgs[f.name]" [placeholder]="f.secret ? '••••••••' : ''" style="width:100%">
+                                <div class="small muted" *ngIf="f.description">{{ f.description }}</div>
+                            </div>
+                        </div>
+                        <div class="picker" style="margin-top:12px">
+                            <button class="gbtn gbtn-outline gbtn-sm" (click)="testConnect(p)" [disabled]="busy">{{ busy ? 'Checking…' : 'Test connection' }}</button>
+                            <button class="gbtn gbtn-primary gbtn-sm" (click)="connect(p)" [disabled]="busy">{{ busy ? 'Connecting…' : (p.methods.length ? 'Update & reconnect' : 'Connect & create payment method') }}</button>
+                        </div>
+                        <div *ngIf="connectResult" class="status-sentence" [class.status-danger]="!connectResult.ok" style="margin-top:12px">
+                            <strong>{{ connectResult.ok ? '✓' : '✕' }}</strong> {{ connectResult.message }}
+                            <div *ngIf="connectResult.webhook" class="small" style="margin-top:4px">Webhook: {{ connectResult.webhook.configured ? 'configured' : 'not configured' }}{{ connectResult.webhook.note ? ' — ' + connectResult.webhook.note : '' }}</div>
+                            <div *ngIf="connectResult.method" class="small" style="margin-top:4px">Payment method <a [routerLink]="['/settings', 'payment-methods', connectResult.method.id]">{{ connectResult.method.code }}</a> {{ connectResult.method.updated ? 'updated' : 'created' }} and {{ connectResult.method.enabled ? 'enabled' : 'left disabled' }}.</div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="card" style="margin-top:14px"><div class="card-block">
@@ -596,6 +624,8 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         .gb-switch.on .gb-switch-knob { left: 20px; }
         .gb-switch-group { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; }
         .code-inline { font-family: ui-monospace, monospace; font-size: 12px; background: var(--gb-surface-2); padding: 1px 6px; border-radius: 6px; }
+        .connect-panel { margin-top: 12px; padding: 14px; border-radius: 10px; background: var(--gb-surface-2); border: 1px solid var(--gb-line); }
+        .picker.small a { font-size: 12.5px; font-weight: 600; color: var(--gb-strong); text-decoration: underline; text-underline-offset: 2px; }
 `],
 })
 export class HuloPaymentsComponent implements OnInit, OnDestroy {
@@ -612,6 +642,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     providers: any = null; events: any[] = [];
     settingsList: any[] | null = null; cfg: any = null; cfgIdx = 0;
     linkOrder = ''; linkProvider = ''; linkHours = 72; link: any = null; links: any = null; copied = false;
+    connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
 
     constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef) {}
 
@@ -707,6 +738,32 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     }
 
     linkProviders(): any[] { return (this.dash?.providers || []).filter((p: any) => p.configured && p.capabilities.payByLink); }
+
+    channelNames(ids: number[]): string {
+        const chans: any[] = this.providers?.channels || [];
+        return (ids || []).map(id => { const c = chans.find(x => x.id === id); return c ? (c.code === '__default_channel__' ? 'default' : c.code) : String(id); }).join(', ') || 'all';
+    }
+    openConnect(p: any) {
+        if (this.connectFor === p.code) { this.connectFor = ''; return; }
+        this.connectFor = p.code; this.connectResult = null;
+        this.connectChannel = (this.providers?.channels || [])[0]?.id || 1;
+        this.connectArgs = {};
+        for (const f of p.connectFields || []) this.connectArgs[f.name] = f.defaultValue || '';
+    }
+    testConnect(p: any) {
+        this.busy = true; this.connectResult = null;
+        this.http.post<any>(`${API}/connect/${p.code}/test`, { args: this.connectArgs }, this.h()).subscribe({
+            next: r => { this.busy = false; this.connectResult = r; this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.connectResult = { ok: false, message: this.errMsg(e, 'Could not reach the provider') }; this.cdr.markForCheck(); },
+        });
+    }
+    connect(p: any) {
+        this.busy = true; this.connectResult = null;
+        this.http.post<any>(`${API}/connect/${p.code}`, { channelId: this.connectChannel, args: this.connectArgs }, this.h()).subscribe({
+            next: r => { this.busy = false; this.connectResult = r; this.notification.success(`${p.name} connected`); this.loadProviders(); this.loadDashboard(); this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.connectResult = { ok: false, message: e?.error?.message || this.errMsg(e, 'Connect failed') }; this.cdr.markForCheck(); },
+        });
+    }
     createLink() {
         this.busy = true; this.link = null; this.copied = false;
         this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), methodCode: this.linkProvider || undefined, expiresInHours: this.linkHours }, this.h()).subscribe({
