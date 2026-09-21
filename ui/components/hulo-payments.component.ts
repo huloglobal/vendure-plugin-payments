@@ -646,16 +646,16 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (t === 'settings') this.loadSettings();
     }
 
-    loadDashboard() { this.http.get<any>(`${API}/dashboard`, { params: { days: String(this.days) } }).subscribe({ next: d => { this.dash = d; this.cdr.markForCheck(); }, error: () => undefined }); }
+    loadDashboard() { this.http.get<any>(`${API}/dashboard`, this.h({ params: { days: String(this.days) } })).subscribe({ next: d => { this.dash = d; this.cdr.markForCheck(); }, error: () => undefined }); }
     loadTxns() {
         const params: any = { kind: this.txnKind, status: this.txnStatus, page: String(this.txnPage) };
         if (this.txnSearch) params.q = this.txnSearch;
-        this.http.get<any>(`${API}/transactions`, { params }).subscribe({ next: t => { this.txns = t; this.cdr.markForCheck(); }, error: () => undefined });
+        this.http.get<any>(`${API}/transactions`, this.h({ params })).subscribe({ next: t => { this.txns = t; this.cdr.markForCheck(); }, error: () => undefined });
     }
     loadSubs() {
         const params: any = { status: this.subStatus };
         if (this.subSearch) params.q = this.subSearch;
-        this.http.get<any>(`${API}/subscriptions`, { params }).subscribe({ next: s => { this.subs = s; this.cdr.markForCheck(); }, error: () => undefined });
+        this.http.get<any>(`${API}/subscriptions`, this.h({ params })).subscribe({ next: s => { this.subs = s; this.cdr.markForCheck(); }, error: () => undefined });
     }
     loadLinks() { this.http.get<any>(`${API}/transactions`, this.h({ params: { kind: 'paylink', perPage: '20' } })).subscribe({ next: t => { this.links = t; this.cdr.markForCheck(); }, error: () => undefined }); }
     loadProviders() {
