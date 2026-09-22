@@ -3,7 +3,8 @@ import { Allow, Ctx, CustomerService, ForbiddenError, Permission, RequestContext
 import gql from 'graphql-tag';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
-import { PremiumRequiredError } from './runtime';
+import { PremiumRequiredError, getRuntime } from './runtime';
+import { HostedCheckoutService } from './hosted.service';
 
 export const shopApiExtensions = gql`
     type HuloPaymentProviderInfo {
@@ -53,6 +54,10 @@ export const shopApiExtensions = gql`
         orderCode: String!
         createdAt: DateTime!
     }
+    type HuloHostedCheckout {
+        url: String!
+        expiresAt: DateTime!
+    }
     input HuloSessionOptionsInput {
         savePaymentMethod: Boolean
         savedMethodId: String
@@ -76,6 +81,8 @@ export const shopApiExtensions = gql`
         huloCancelSubscription(id: ID!, atPeriodEnd: Boolean): HuloSubscription!
         """Apply (or clear) the configured surcharge for a payment method to the active order."""
         huloApplyPaymentSurcharge(methodCode: String!): Order!
+        """A hosted checkout page for the active order: send the customer there, they come back to returnUrl with ?order=&result=."""
+        huloHostedCheckout(returnUrl: String!, cancelUrl: String, locale: String): HuloHostedCheckout!
     }
 `;
 
@@ -86,7 +93,7 @@ function friendly(e: any): never {
 
 @Resolver()
 export class HuloPaymentsShopResolver {
-    constructor(private payments: PaymentsService, private subscriptions: SubscriptionService, private customerService: CustomerService) {}
+    constructor(private payments: PaymentsService, private subscriptions: SubscriptionService, private customerService: CustomerService, private hosted: HostedCheckoutService) {}
 
     @Query()
     @Allow(Permission.Public)
@@ -138,6 +145,16 @@ export class HuloPaymentsShopResolver {
         const sub = await this.subscriptions.findOne(Number(args.id));
         if (!sub || Number(sub.customerId) !== Number(customer.id)) throw new ForbiddenError();
         return this.subscriptions.cancel(Number(args.id), args.atPeriodEnd !== false, `customer:${customer.emailAddress}`);
+    }
+
+    @Mutation()
+    @Transaction()
+    @Allow(Permission.Public)
+    async huloHostedCheckout(@Ctx() ctx: RequestContext, @Args() args: { returnUrl: string; cancelUrl?: string; locale?: string }) {
+        const order = await this.payments.activeOrderOrThrow(ctx);
+        if (!/^https?:\/\//.test(args.returnUrl || '')) throw new UserInputError('returnUrl must be an absolute http(s) URL');
+        const s = await this.hosted.create(order.id, order.code, ctx.channelId as number, args.returnUrl, args.cancelUrl || args.returnUrl, args.locale || ctx.languageCode || 'en-GB');
+        return { url: `${getRuntime().publicBaseUrl().replace(/\/$/, '')}/hulo-payments/pay/${s.token}`, expiresAt: new Date(s.expiresAt) };
     }
 
     @Mutation()

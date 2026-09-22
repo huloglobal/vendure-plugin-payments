@@ -4,8 +4,13 @@
 [![Vendure](https://img.shields.io/badge/Vendure-%3E%3D3.5%20%3C4-1d4ed8)](https://vendure.io)
 
 One payments plugin for [Vendure](https://www.vendure.io/). **Stripe, Adyen,
-PayPal and Mollie** behind a single contract, so every provider gets the
-same features and every payment lands in the same ledger:
+PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, Coinbase
+Commerce, bank transfer and pay-later** behind a single contract, so every
+provider gets the same features and every payment lands in the same ledger:
+
+- **Hosted checkout page** — one mutation and a redirect; the plugin's own
+  page shows every enabled method, drives each provider's client and brings
+  the customer back paid. Nothing provider-specific in your storefront.
 
 - **Hosted / embedded sessions** — Stripe Payment Element, Adyen Drop-in,
   PayPal buttons, Mollie hosted checkout; cards, Apple Pay, Google Pay,
@@ -82,6 +87,15 @@ migration is Vendure's own for the three subscription custom fields on
 
 ## Storefront
 
+The simplest integration is the hosted page:
+
+```graphql
+mutation { huloHostedCheckout(returnUrl: "https://shop.example.com/checkout/return", cancelUrl: "https://shop.example.com/checkout") { url expiresAt } }
+# → redirect the customer to `url`; they return to returnUrl?order=CODE&result=paid|pending
+```
+
+For an embedded checkout, drive the providers yourself:
+
 ```graphql
 # 1. What to offer (preferred first, with public keys and capabilities)
 query { huloPaymentProviders { methodCode provider name publicConfig capabilities surcharge preferred } }
@@ -100,6 +114,12 @@ mutation { addPaymentToOrder(input: { method: "stripe", metadata: { paymentInten
 | Adyen | `@adyen/adyen-web` Drop-in with `sessionId` + `sessionData`, `clientKey`, `environment` | `{ sessionId, sessionResult }` from `onPaymentCompleted` |
 | PayPal | `@paypal/paypal-js` buttons with `createOrder: () => sessionId` | `{ paypalOrderId }` |
 | Mollie | redirect to `checkoutUrl`; on return | `{ molliePaymentId }` (the `sessionId`) |
+| Square | Web Payments SDK with `config.applicationId` / `locationId` | `{ sourceId }` (the card token) |
+| Braintree | Drop-in with `clientSecret` as the authorization | `{ nonce, deviceData }` |
+| GoCardless | redirect to `checkoutUrl`; on return | `{ billingRequestId }` (the `sessionId`) |
+| Checkout.com | redirect to `checkoutUrl`; on return | `{ sessionId }` |
+| Coinbase Commerce | redirect to `checkoutUrl`; on return | `{ chargeCode }` (the `sessionId`) |
+| Bank transfer / pay later | show `instructions` | `{}` |
 
 Also available: `huloSavedPaymentMethods`, `huloRemoveSavedPaymentMethod`,
 `huloMySubscriptions`, `huloCancelSubscription(id, atPeriodEnd)`,
@@ -120,7 +140,8 @@ subscriptions need one customer approval; the approval link is exposed on
 
 | Free tier | Licensed |
 | --- | --- |
-| Stripe: sessions, wallets, 3-D Secure, automatic/manual capture, refunds, disputes, signed webhooks | Adyen, PayPal and Mollie |
+| Stripe: sessions, wallets, 3-D Secure, automatic/manual capture, refunds, disputes, signed webhooks; bank transfer; pay later | Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, Coinbase Commerce |
+| Hosted checkout page | |
 | Ledger, dashboard, webhook log | Subscriptions and the renewal scheduler |
 | `hulo-payment-rules` eligibility checker | Saved cards, pay-by-link, provider routing, surcharges |
 

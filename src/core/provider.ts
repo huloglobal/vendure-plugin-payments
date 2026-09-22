@@ -1,9 +1,14 @@
 import { Order, RequestContext } from '@vendure/core';
 
 /** Provider codes double as PaymentMethodHandler codes. */
-export type ProviderCode = 'hulo-stripe' | 'hulo-adyen' | 'hulo-paypal' | 'hulo-mollie';
+export type ProviderCode =
+    | 'hulo-stripe' | 'hulo-adyen' | 'hulo-paypal' | 'hulo-mollie'
+    | 'hulo-square' | 'hulo-braintree' | 'hulo-gocardless' | 'hulo-checkout-com' | 'hulo-coinbase'
+    | 'hulo-bank-transfer' | 'hulo-pay-later';
 
 export interface ProviderCapabilities {
+    /** Money moves outside the plugin (bank transfer, invoice): settled by hand in the admin. */
+    offline?: boolean;
     /** Hosted / embedded checkout element (client-side confirmation). */
     session: boolean;
     /** Authorise now, capture later. */
@@ -37,6 +42,10 @@ export interface ClientSession {
     publicKey?: string;
     /** Provider environment: 'test' | 'live'. */
     environment?: string;
+    /** How the hosted page / storefront should drive this session. */
+    flow?: 'stripe-element' | 'adyen-dropin' | 'paypal-buttons' | 'square-web' | 'braintree-dropin' | 'redirect' | 'instructions';
+    /** Text shown to the customer for offline methods (bank details, pay-later terms). */
+    instructions?: string;
     /** Extra public config (Adyen: environment/countryCode/locale, PayPal: currency). */
     config?: Record<string, any>;
     amount: number;

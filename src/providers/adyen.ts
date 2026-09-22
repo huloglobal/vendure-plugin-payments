@@ -118,7 +118,7 @@ export const adyenProvider: PaymentProvider = {
         };
         const s = await adyen(args, '/sessions', { json, idempotencyKey: idem('hulo-ady-session', order.code, json.amount.value, order.currencyCode, recurring ? 'r' : '') });
         return {
-            provider: ADYEN_CODE, sessionId: s.id, sessionData: s.sessionData, publicKey: args.clientKey,
+            provider: ADYEN_CODE, flow: 'adyen-dropin', sessionId: s.id, sessionData: s.sessionData, publicKey: args.clientKey,
             environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode,
             expiresAt: s.expiresAt, config: { countryCode: json.countryCode, locale: json.shopperLocale, shopperReference },
         };

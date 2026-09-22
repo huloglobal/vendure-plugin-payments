@@ -101,7 +101,7 @@ export const stripeProvider: PaymentProvider = {
         if (opts.savedMethodId) form.payment_method = opts.savedMethodId;
         const pi = await stripe(args, '/payment_intents', { form, idempotencyKey: idem('hulo-pi', order.code, amount, order.currencyCode, opts.savedMethodId, opts.providerCustomerRef) });
         return {
-            provider: STRIPE_CODE, clientSecret: pi.client_secret, sessionId: pi.id, publicKey: args.publishableKey,
+            provider: STRIPE_CODE, flow: 'stripe-element', clientSecret: pi.client_secret, sessionId: pi.id, publicKey: args.publishableKey,
             environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode,
         };
     },

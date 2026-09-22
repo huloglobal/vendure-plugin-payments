@@ -100,7 +100,7 @@ export const paypalProvider: PaymentProvider = {
             },
             idempotencyKey: idem('hulo-pp', order.code, order.totalWithTax, order.currencyCode, Date.now().toString(36).slice(0, 5)),
         });
-        return { provider: PAYPAL_CODE, sessionId: o.id, checkoutUrl: link(o, 'payer-action') || link(o, 'approve'), publicKey: args.clientId, environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode, config: { intent: intent.toLowerCase() } };
+        return { provider: PAYPAL_CODE, flow: 'paypal-buttons', sessionId: o.id, checkoutUrl: link(o, 'payer-action') || link(o, 'approve'), publicKey: args.clientId, environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode, config: { intent: intent.toLowerCase() } };
     },
 
     async confirmPayment(_ctx, order, args, metadata): Promise<PaymentOutcome> {

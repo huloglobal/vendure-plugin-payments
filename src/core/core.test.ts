@@ -108,3 +108,54 @@ describe('eligibility rules', () => {
         expect(await check({ requireLogin: true })).toBe(false);
     });
 });
+
+describe('more providers', () => {
+    it('Square verifies HMAC over notification URL + body and normalises payments', async () => {
+        const { squareProvider, normaliseSquareEvent } = await import('../providers/square');
+        const { configureRuntime } = await import('./runtime');
+        configureRuntime({ publicBaseUrl: () => 'https://shop.test' });
+        const body = JSON.stringify({ event_id: 'e1', type: 'payment.updated', data: { object: { payment: { id: 'P1', status: 'COMPLETED', reference_id: 'O1', amount_money: { amount: 1999, currency: 'GBP' } } } } });
+        const sig = createHmac('sha256', 'sqkey').update('https://shop.test/hulo-payments/webhook/hulo-square' + body).digest('base64');
+        const ok = await squareProvider.verifyWebhook({ webhookSignatureKey: 'sqkey' }, body, { 'x-square-hmacsha256-signature': sig }, {});
+        expect(ok.ok).toBe(true);
+        expect(ok.events[0]).toMatchObject({ type: 'payment.settled', orderCode: 'O1', paymentRef: 'P1', amount: 1999 });
+        expect((await squareProvider.verifyWebhook({ webhookSignatureKey: 'sqkey' }, body, { 'x-square-hmacsha256-signature': 'nope' }, {})).ok).toBe(false);
+        expect(normaliseSquareEvent({ event_id: 'e2', type: 'dispute.state.updated', data: { object: { dispute: { id: 'D1', state: 'WON', amount_money: { amount: 500, currency: 'GBP' }, disputed_payment: { payment_id: 'P1' } } } } })).toMatchObject({ type: 'dispute.closed', reason: 'won', paymentRef: 'P1' });
+    });
+    it('GoCardless verifies the Webhook-Signature header and maps events', async () => {
+        const { gocardlessProvider } = await import('../providers/gocardless');
+        const body = JSON.stringify({ events: [{ id: 'EV1', resource_type: 'payments', action: 'confirmed', links: { payment: 'PM1' } }, { id: 'EV2', resource_type: 'payments', action: 'charged_back', links: { payment: 'PM1' } }, { id: 'EV3', resource_type: 'subscriptions', action: 'cancelled', links: { subscription: 'SB1' } }] });
+        const sig = createHmac('sha256', 'gcsecret').update(body).digest('hex');
+        const ok = await gocardlessProvider.verifyWebhook({ webhookSecret: 'gcsecret' }, body, { 'webhook-signature': sig }, {});
+        expect(ok.ok).toBe(true);
+        expect(ok.events.map(e => e.type)).toEqual(['payment.settled', 'dispute.opened', 'subscription.canceled']);
+    });
+    it('Checkout.com verifies cko-signature and maps captures and disputes', async () => {
+        const { checkoutComProvider } = await import('../providers/checkout-com');
+        const body = JSON.stringify({ id: 'evt_1', type: 'payment_captured', data: { id: 'pay_1', reference: 'O1', amount: 2500, currency: 'GBP' } });
+        const sig = createHmac('sha256', 'ckosecret').update(body).digest('hex');
+        const ok = await checkoutComProvider.verifyWebhook({ webhookSecret: 'ckosecret' }, body, { 'cko-signature': sig }, {});
+        expect(ok.ok).toBe(true);
+        expect(ok.events[0]).toMatchObject({ type: 'payment.settled', orderCode: 'O1', paymentRef: 'pay_1', amount: 2500, currency: 'GBP' });
+    });
+    it('Coinbase Commerce verifies X-CC-Webhook-Signature and maps confirmations', async () => {
+        const { coinbaseProvider } = await import('../providers/coinbase');
+        const body = JSON.stringify({ event: { id: 'e1', type: 'charge:confirmed', data: { code: 'ABCD', metadata: { orderCode: 'O1' }, pricing: { local: { amount: '19.99', currency: 'GBP' } } } } });
+        const sig = createHmac('sha256', 'cbsecret').update(body).digest('hex');
+        const ok = await coinbaseProvider.verifyWebhook({ webhookSharedSecret: 'cbsecret' }, body, { 'x-cc-webhook-signature': sig }, {});
+        expect(ok.ok).toBe(true);
+        expect(ok.events[0]).toMatchObject({ type: 'payment.settled', orderCode: 'O1', paymentRef: 'ABCD', amount: 1999 });
+    });
+    it('offline methods authorise immediately with instructions and settle by hand', async () => {
+        const { bankTransferProvider, payLaterProvider } = await import('../providers/offline');
+        const order: any = { code: 'O1', totalWithTax: 5000, currencyCode: 'GBP', lines: [] };
+        const s = await bankTransferProvider.createSession({} as any, order, { accountName: 'HULO Ltd', sortCode: '00-00-00', accountNumber: '12345678' }, {});
+        expect(s.flow).toBe('instructions');
+        expect(s.instructions).toContain('Reference: O1');
+        const p = await bankTransferProvider.confirmPayment({} as any, order, { accountName: 'HULO Ltd' }, {});
+        expect(p).toMatchObject({ state: 'Authorized', amount: 5000 });
+        const pl = await payLaterProvider.confirmPayment({} as any, order, { termsDays: 14 }, {});
+        expect(pl.state).toBe('Authorized');
+        expect((pl.metadata as any).public.termsDays).toBe(14);
+    });
+});

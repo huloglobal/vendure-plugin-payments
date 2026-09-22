@@ -5,6 +5,13 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-22
+
+### Added
+- **Hosted checkout page.** `huloHostedCheckout(returnUrl)` returns a URL the storefront redirects to; the page shows every enabled method in the channel's preferred order, drives each provider's own client (Stripe Payment Element, Adyen Drop-in, PayPal buttons, Square Web Payments, Braintree Drop-in, hosted redirects, bank-transfer instructions), records the payment and sends the customer back with `?order=&result=`. No provider code in the storefront. Branding (name, colour, logo) per channel in Settings.
+- **Seven more payment systems**, all behind the same contract: Square (cards, Apple Pay, Google Pay, Cash App Pay, Afterpay; holds, refunds, payment links, signed webhooks), Braintree (cards, PayPal, Venmo, wallets; holds, refunds), GoCardless (Bacs, SEPA, ACH direct debit, Instant Bank Pay; native subscriptions), Checkout.com (hosted payments page; holds, refunds, disputes, payment links, workflow webhooks), Coinbase Commerce (crypto), bank transfer and pay-later / invoice (offline methods settled from the order page, free tier).
+- **Get-started wizard** on the Payments page until the first provider is connected; Connect works for every provider, including automatic webhook setup for Square and Checkout.com.
+
 ## [0.1.0] — 2026-09-21
 
 ### Added

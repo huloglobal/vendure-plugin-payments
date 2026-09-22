@@ -28,6 +28,13 @@ export const HANDLER_DESCRIPTIONS: Record<ProviderCode, string> = {
     'hulo-adyen': 'HULO Payments — Adyen (cards, wallets, iDEAL, Klarna + 100 local methods; captures, refunds, tokenised subscriptions)',
     'hulo-paypal': 'HULO Payments — PayPal (PayPal, Pay Later, Venmo; authorise or capture, refunds, subscriptions)',
     'hulo-mollie': 'HULO Payments — Mollie (iDEAL, cards, Bancontact, SEPA, Klarna; refunds, subscriptions)',
+    'hulo-square': 'HULO Payments — Square (cards, Apple Pay, Google Pay, Cash App Pay, Afterpay; holds, refunds, payment links)',
+    'hulo-braintree': 'HULO Payments — Braintree (cards, PayPal, Venmo, Apple Pay, Google Pay; holds, refunds)',
+    'hulo-gocardless': 'HULO Payments — GoCardless (Bacs, SEPA, ACH direct debit, Instant Bank Pay; subscriptions)',
+    'hulo-checkout-com': 'HULO Payments — Checkout.com (hosted page: cards, wallets, Klarna, iDEAL; holds, refunds, payment links)',
+    'hulo-coinbase': 'HULO Payments — Coinbase Commerce (Bitcoin, Ethereum, USDC and other crypto)',
+    'hulo-bank-transfer': 'HULO Payments — Bank transfer (customer pays by bank, settle from the order page)',
+    'hulo-pay-later': 'HULO Payments — Pay later / invoice (on account, due in N days)',
 };
 
 /** Handler args per provider — these are the credentials admins fill in on the PaymentMethod. */
@@ -58,6 +65,51 @@ export const HANDLER_ARGS: Record<ProviderCode, ConfigArgs> = {
         intent: select('Intent', ['CAPTURE', 'AUTHORIZE'], 'CAPTURE', 'CAPTURE = take the money immediately. AUTHORIZE = hold funds and settle from the order page.'),
         webhookId: text('Webhook ID', 'Same app → Webhooks → add <your server>/hulo-payments/webhook/hulo-paypal with all payment, dispute and billing events → paste its ID.'),
         brandName: text('Brand name', 'Shown to the customer on the PayPal approval page.'),
+    },
+    'hulo-square': {
+        environment: select('Environment', ['sandbox', 'live'], 'sandbox', 'sandbox = developer.squareup.com sandbox credentials; live = production.'),
+        accessToken: secret('Access token', 'developer.squareup.com → your application → Credentials → Access token.'),
+        applicationId: text('Application ID', 'Same page → Application ID. Safe to send to the browser.'),
+        locationId: text('Location ID', 'Same application → Locations, or Square Dashboard → Account & Settings → Locations.'),
+        captureMode: select('Capture', ['automatic', 'manual'], 'automatic', 'automatic = take the money immediately. manual = reserve now and settle from the order page within 7 days.'),
+        webhookSignatureKey: secret('Webhook signature key', 'Filled in by Connect; or Developer Dashboard → Webhooks → your subscription → Signature key.'),
+    },
+    'hulo-braintree': {
+        environment: select('Environment', ['sandbox', 'live'], 'sandbox', 'sandbox = sandbox.braintreegateway.com keys; live = production.'),
+        merchantId: text('Merchant ID', 'Braintree Control Panel → Settings → API → Merchant ID.'),
+        publicKey: text('Public key', 'Same page → Public key.'),
+        privateKey: secret('Private key', 'Same page → Private key.'),
+        merchantAccountId: text('Merchant account ID', 'Optional: a specific merchant account (currency) to transact on.'),
+        captureMode: select('Capture', ['automatic', 'manual'], 'automatic', 'automatic = charge immediately. manual = authorise and settle from the order page.'),
+    },
+    'hulo-gocardless': {
+        environment: select('Environment', ['sandbox', 'live'], 'sandbox', 'sandbox = manage-sandbox.gocardless.com; live = production.'),
+        accessToken: secret('Access token', 'GoCardless dashboard → Developers → Create → Access token (read-write).'),
+        webhookSecret: secret('Webhook secret', 'Developers → Webhook endpoints → add <your server>/hulo-payments/webhook/hulo-gocardless → copy its secret here.'),
+    },
+    'hulo-checkout-com': {
+        environment: select('Environment', ['sandbox', 'live'], 'sandbox', 'sandbox = dashboard.sandbox.checkout.com keys; live = production.'),
+        secretKey: secret('Secret key', 'Dashboard → Developers → Keys → secret key (sk_…).'),
+        publicKey: text('Public key', 'Same page → public key (pk_…). Safe to send to the browser.'),
+        processingChannelId: text('Processing channel ID', 'Dashboard → Settings → Channels (pc_…).'),
+        captureMode: select('Capture', ['automatic', 'manual'], 'automatic', 'automatic = capture on authorisation. manual = settle from the order page.'),
+        webhookSecret: secret('Webhook signature key', 'Filled in by Connect (a workflow with an HMAC signature); or set it on the workflow webhook action yourself.'),
+    },
+    'hulo-coinbase': {
+        apiKey: secret('API key', 'Coinbase Commerce → Settings → Security → API keys.'),
+        webhookSharedSecret: secret('Webhook shared secret', 'Settings → Notifications → add <your server>/hulo-payments/webhook/hulo-coinbase → shared secret.'),
+    },
+    'hulo-bank-transfer': {
+        accountName: text('Account name', 'The payee name customers should use.'),
+        sortCode: text('Sort code', 'UK accounts; leave empty if using IBAN only.'),
+        accountNumber: text('Account number', 'UK accounts; leave empty if using IBAN only.'),
+        iban: text('IBAN', 'For international customers.'),
+        bic: text('BIC / SWIFT', 'For international customers.'),
+        instructions: text('Extra instructions', 'Optional text shown with the bank details. {{orderCode}} is replaced with the order code.'),
+    },
+    'hulo-pay-later': {
+        termsDays: text('Payment terms (days)', 'How many days after the order the invoice is due.', '30'),
+        instructions: text('Instructions', 'Optional text shown to the customer. {{orderCode}}, {{dueDate}} and {{termsDays}} are replaced.'),
     },
     'hulo-mollie': {
         apiKey: secret('API key', 'Mollie Dashboard → Developers → API keys. Starts live_ (or test_ for testing).'),

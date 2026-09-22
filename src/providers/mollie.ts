@@ -79,7 +79,7 @@ export const mollieProvider: PaymentProvider = {
         };
         if (recurring && opts.providerCustomerRef) { json.customerId = opts.providerCustomerRef; json.sequenceType = 'first'; }
         const p = await mollie(args, '/payments', { json, idempotencyKey: idem('hulo-mol', order.code, json.amount.value, order.currencyCode, recurring ? 'r' : '') });
-        return { provider: MOLLIE_CODE, sessionId: p.id, checkoutUrl: p._links?.checkout?.href, environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode, expiresAt: p.expiresAt };
+        return { provider: MOLLIE_CODE, flow: 'redirect', sessionId: p.id, checkoutUrl: p._links?.checkout?.href, environment: this.publicConfig(args).environment, amount: order.totalWithTax, currency: order.currencyCode, expiresAt: p.expiresAt };
     },
 
     async confirmPayment(_ctx, order, args, metadata): Promise<PaymentOutcome> {

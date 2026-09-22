@@ -39,10 +39,10 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
     const ledger = () => (server as any).app.get(LedgerService) as LedgerService;
     const subs = () => (server as any).app.get(SubscriptionService) as SubscriptionService;
 
-    it('registers four handlers and the rules checker', async () => {
+    it('registers all eleven handlers and the rules checker', async () => {
         const r: any = await adminClient.query(gql`query { paymentMethodHandlers { code } paymentMethodEligibilityCheckers { code } }`);
         const codes = r.paymentMethodHandlers.map((h: any) => h.code);
-        expect(codes).toEqual(expect.arrayContaining(['hulo-stripe', 'hulo-adyen', 'hulo-paypal', 'hulo-mollie']));
+        expect(codes).toEqual(expect.arrayContaining(['hulo-stripe', 'hulo-adyen', 'hulo-paypal', 'hulo-mollie', 'hulo-square', 'hulo-braintree', 'hulo-gocardless', 'hulo-checkout-com', 'hulo-coinbase', 'hulo-bank-transfer', 'hulo-pay-later']));
         expect(r.paymentMethodEligibilityCheckers.map((c: any) => c.code)).toContain('hulo-payment-rules');
     });
 
@@ -109,12 +109,60 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         expect(providers.channels[0].id).toBe(1);
     });
 
+    it('hosted checkout takes an order from basket to PaymentAuthorized with bank transfer', async () => {
+        // Catalogue + shipping so a shop order can reach ArrangingPayment.
+        const tax: any = await adminClient.query(gql`mutation { createTaxCategory(input: { name: "Standard" }) { id } }`);
+        const product: any = await adminClient.query(gql`mutation($tax: ID!) { createProduct(input: { translations: [{ languageCode: en, name: "Staging licence", slug: "staging-licence", description: "" }] }) { id } }`, { tax: tax.createTaxCategory.id }).catch(async () => adminClient.query(gql`mutation { createProduct(input: { translations: [{ languageCode: en, name: "Staging licence", slug: "staging-licence", description: "" }] }) { id } }`));
+        const variant: any = await adminClient.query(gql`mutation($pid: ID!, $tax: ID!) { createProductVariants(input: [{ productId: $pid, sku: "STG-1", price: 1999, taxCategoryId: $tax, trackInventory: FALSE, stockOnHand: 100, translations: [{ languageCode: en, name: "Staging licence" }] }]) { id } }`, { pid: product.createProduct.id, tax: tax.createTaxCategory.id });
+        await adminClient.query(gql`mutation { createShippingMethod(input: { code: "email", fulfillmentHandler: "manual-fulfillment", checker: { code: "default-shipping-eligibility-checker", arguments: [{ name: "orderMinimum", value: "0" }] }, calculator: { code: "default-shipping-calculator", arguments: [{ name: "rate", value: "0" }, { name: "includesTax", value: "auto" }, { name: "taxRate", value: "0" }] }, translations: [{ languageCode: en, name: "Email delivery", description: "" }] }) { id } }`);
+        await adminClient.query(gql`mutation { createPaymentMethod(input: { code: "bank", enabled: true, translations: [{ languageCode: en, name: "Bank transfer" }], handler: { code: "hulo-bank-transfer", arguments: [{ name: "accountName", value: "HULO Ltd" }, { name: "sortCode", value: "00-00-00" }, { name: "accountNumber", value: "12345678" }, { name: "iban", value: "" }, { name: "bic", value: "" }, { name: "instructions", value: "Quote {{orderCode}}" }] } }) { id } }`);
+        // Shop side: basket → customer → shipping → ArrangingPayment → hosted checkout.
+        const shop = async (query: string, variables?: any) => {
+            const res = await fetch(`${BASE}/shop-api`, { method: 'POST', headers: { 'content-type': 'application/json', ...(shopToken ? { authorization: `Bearer ${shopToken}` } : {}) }, body: JSON.stringify({ query, variables }) });
+            const t = res.headers.get('vendure-auth-token'); if (t) shopToken = t;
+            const json: any = await res.json(); if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join('; '));
+            for (const v of Object.values(json.data || {}) as any[]) if (v && typeof v === 'object' && v.errorCode) throw new Error(`${v.errorCode}: ${v.message}`);
+            return json.data;
+        };
+        let shopToken = '';
+        await shop(`mutation($id: ID!) { addItemToOrder(productVariantId: $id, quantity: 1) { ... on Order { code } ... on ErrorResult { errorCode message } } }`, { id: variant.createProductVariants[0].id });
+        await shop(`mutation { setCustomerForOrder(input: { emailAddress: "hosted@example.test", firstName: "Hosted", lastName: "Tester" }) { ... on Order { code } ... on ErrorResult { errorCode message } } }`);
+        await shop(`mutation { setOrderShippingAddress(input: { fullName: "Hosted Tester", streetLine1: "1 Test St", city: "London", postalCode: "SW1A 1AA", countryCode: "GB" }) { ... on Order { code } ... on ErrorResult { errorCode message } } }`);
+        const m: any = await shop(`{ eligibleShippingMethods { id } }`);
+        await shop(`mutation($id: [ID!]!) { setOrderShippingMethod(shippingMethodId: $id) { ... on Order { code } ... on ErrorResult { errorCode message } } }`, { id: [m.eligibleShippingMethods[0].id] });
+        const t: any = await shop(`mutation { transitionOrderToState(state: "ArrangingPayment") { ... on Order { state code } ... on ErrorResult { errorCode message } } }`);
+        expect(t.transitionOrderToState.state).toBe('ArrangingPayment');
+        const h: any = await shop(`mutation { huloHostedCheckout(returnUrl: "https://shop.test/checkout/return") { url expiresAt } }`);
+        expect(h.huloHostedCheckout.url).toMatch(new RegExp(`^${BASE}/hulo-payments/pay/[a-f0-9]{48}$`));
+        const page = await fetch(h.huloHostedCheckout.url);
+        expect(page.status).toBe(200);
+        const html = await page.text();
+        expect(html).toContain('Bank transfer');
+        expect(html).toContain(t.transitionOrderToState.code);
+        const sess = await fetch(`${h.huloHostedCheckout.url}/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'bank' }) });
+        expect(sess.status).toBe(200);
+        const sj: any = await sess.json();
+        expect(sj.flow).toBe('instructions');
+        expect(sj.instructions).toContain(`Reference: ${t.transitionOrderToState.code}`);
+        expect(sj.instructions).toContain(`Quote ${t.transitionOrderToState.code}`);
+        const done = await fetch(`${h.huloHostedCheckout.url}/complete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'bank', metadata: {} }) });
+        const dj: any = await done.json();
+        expect({ status: done.status, ...dj }).toMatchObject({ paid: true });
+        expect(dj.state).toBe('PaymentAuthorized');
+        expect(dj.redirect).toBe(`https://shop.test/checkout/return?order=${t.transitionOrderToState.code}&result=pending`);
+        // Page now redirects to the return URL, and the token is spent.
+        const again = await fetch(h.huloHostedCheckout.url, { redirect: 'manual' });
+        expect(again.status).toBe(302);
+        const ledgerRows = await ledger().list({ kind: 'authorize' });
+        expect(ledgerRows.items[0]).toMatchObject({ provider: 'hulo-bank-transfer', orderCode: t.transitionOrderToState.code, amount: 1999 });
+    });
+
     it('unknown providers are refused', async () => {
         expect((await fetch(`${BASE}/hulo-payments/webhook/hulo-nope`, { method: 'POST', body: '{}' })).status).toBe(404);
     });
 
     it('stores per-channel settings and lists subscriptions', async () => {
-        await ledger().saveSettings({ channelId: 1, providerOrder: ['hulo-adyen', 'hulo-stripe'], fallbackOnFailure: false, saveCardsDefault: true, surcharges: { 'hulo-paypal': { type: 'percent', value: 2.5 } }, opsEmail: 'ops@example.test', dunningDays: 5 });
+        await ledger().saveSettings({ channelId: 1, providerOrder: ['hulo-adyen', 'hulo-stripe'], fallbackOnFailure: false, saveCardsDefault: true, surcharges: { 'hulo-paypal': { type: 'percent', value: 2.5 } }, opsEmail: 'ops@example.test', dunningDays: 5, hostedBrandName: 'Staging shop', hostedAccent: '#1d4ed8', hostedLogoUrl: '' });
         const s = await ledger().getSettings(1);
         expect(s.providerOrder[0]).toBe('hulo-adyen');
         expect(s.surcharges['hulo-paypal']).toMatchObject({ type: 'percent', value: 2.5 });

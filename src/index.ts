@@ -9,3 +9,9 @@ export { adyenProvider, normaliseAdyenItem, verifyHmac as verifyAdyenHmac } from
 export { paypalProvider, normalisePayPalEvent } from './providers/paypal';
 export { mollieProvider } from './providers/mollie';
 export * from './core/money';
+export { squareProvider } from './providers/square';
+export { braintreeProvider } from './providers/braintree';
+export { gocardlessProvider } from './providers/gocardless';
+export { checkoutComProvider } from './providers/checkout-com';
+export { coinbaseProvider } from './providers/coinbase';
+export { bankTransferProvider, payLaterProvider } from './providers/offline';

@@ -35,15 +35,22 @@ export interface ChannelSettings {
     opsEmail: string;
     /** Days before a past-due subscription is cancelled by the scheduler. */
     dunningDays: number;
+    /** Hosted checkout page branding. */
+    hostedBrandName: string;
+    hostedAccent: string;
+    hostedLogoUrl: string;
 }
 
 export const DEFAULT_SETTINGS: Omit<ChannelSettings, 'channelId'> = {
-    providerOrder: ['hulo-stripe', 'hulo-adyen', 'hulo-paypal', 'hulo-mollie'],
+    providerOrder: ['hulo-stripe', 'hulo-adyen', 'hulo-checkout-com', 'hulo-square', 'hulo-braintree', 'hulo-paypal', 'hulo-mollie', 'hulo-gocardless', 'hulo-coinbase', 'hulo-bank-transfer', 'hulo-pay-later'],
     fallbackOnFailure: true,
     saveCardsDefault: true,
     surcharges: {},
     opsEmail: '',
     dunningDays: 7,
+    hostedBrandName: '',
+    hostedAccent: '#1d4ed8',
+    hostedLogoUrl: '',
 };
 
 /**
@@ -116,6 +123,9 @@ export class LedgerService implements OnModuleInit {
                 dunningDays INT NOT NULL DEFAULT 7,
                 updatedAt DATETIME NOT NULL
             )`);
+        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedBrandName VARCHAR(120) NOT NULL DEFAULT ''`);
+        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedAccent VARCHAR(16) NOT NULL DEFAULT '#1d4ed8'`);
+        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedLogoUrl VARCHAR(500) NOT NULL DEFAULT ''`);
     }
 
     // ── Transactions ────────────────────────────────────────────────────
@@ -244,19 +254,23 @@ export class LedgerService implements OnModuleInit {
             surcharges,
             opsEmail: row.opsEmail || '',
             dunningDays: Number(row.dunningDays ?? 7),
+            hostedBrandName: row.hostedBrandName || '',
+            hostedAccent: row.hostedAccent || '#1d4ed8',
+            hostedLogoUrl: row.hostedLogoUrl || '',
         };
     }
 
     async saveSettings(s: ChannelSettings): Promise<void> {
         await this.db.query(
-            `INSERT INTO hulo_payment_settings (channelId, providerOrder, fallbackOnFailure, saveCardsDefault, surchargeJson, opsEmail, dunningDays, updatedAt)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+            `INSERT INTO hulo_payment_settings (channelId, providerOrder, fallbackOnFailure, saveCardsDefault, surchargeJson, opsEmail, dunningDays, hostedBrandName, hostedAccent, hostedLogoUrl, updatedAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE providerOrder = VALUES(providerOrder), fallbackOnFailure = VALUES(fallbackOnFailure),
                 saveCardsDefault = VALUES(saveCardsDefault), surchargeJson = VALUES(surchargeJson), opsEmail = VALUES(opsEmail),
-                dunningDays = VALUES(dunningDays), updatedAt = NOW()`,
-            [s.channelId, JSON.stringify((s.providerOrder || []).filter(c => typeof c === 'string').slice(0, 10)),
+                dunningDays = VALUES(dunningDays), hostedBrandName = VALUES(hostedBrandName), hostedAccent = VALUES(hostedAccent), hostedLogoUrl = VALUES(hostedLogoUrl), updatedAt = NOW()`,
+            [s.channelId, JSON.stringify((s.providerOrder || []).filter(c => typeof c === 'string').slice(0, 12)),
              s.fallbackOnFailure ? 1 : 0, s.saveCardsDefault ? 1 : 0, JSON.stringify(s.surcharges || {}).slice(0, 4000),
-             String(s.opsEmail || '').slice(0, 190), Math.max(1, Math.min(60, Number(s.dunningDays) || 7))],
+             String(s.opsEmail || '').slice(0, 190), Math.max(1, Math.min(60, Number(s.dunningDays) || 7)),
+             String(s.hostedBrandName || '').slice(0, 120), /^#[0-9a-fA-F]{3,8}$/.test(String(s.hostedAccent || '')) ? String(s.hostedAccent) : '#1d4ed8', String(s.hostedLogoUrl || '').slice(0, 500)],
             { conflictColumns: ['channelId'] });
     }
 }

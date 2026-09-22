@@ -111,6 +111,17 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
             </div>
         </vdr-page-block>
 
+        <vdr-page-block *ngIf="dash && !configuredCount()">
+            <div class="card"><div class="card-block">
+                <h3 class="step-title" style="margin:0 0 4px">Three steps to taking payments</h3>
+                <div class="hulo-help-grid" style="margin-top:12px">
+                    <div class="hulo-help-card"><div class="hulo-help-num">1</div><h4>Connect a provider</h4><p>Stripe, Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, crypto, bank transfer or pay later. Paste the keys; the plugin checks them and sets up the webhook.</p><button class="gbtn gbtn-primary gbtn-sm" style="margin-top:8px" (click)="go('providers')">Choose a provider →</button></div>
+                    <div class="hulo-help-card"><div class="hulo-help-num">2</div><h4>Send customers to the hosted checkout</h4><p>One mutation, one redirect: <span class="code-inline">huloHostedCheckout(returnUrl)</span> returns a page that shows every enabled method and brings the customer back paid. No provider code in your storefront.</p><button class="gbtn gbtn-outline gbtn-sm" style="margin-top:8px" (click)="go('settings')">Brand the page →</button></div>
+                    <div class="hulo-help-card"><div class="hulo-help-num">3</div><h4>Take a test payment</h4><p>Use test-mode keys first; every capture, refund and dispute shows up in Transactions. Switch to live keys with Reconnect when you are happy.</p><a class="gbtn gbtn-outline gbtn-sm" style="margin-top:8px" href="https://huloglobal.com/vendure-plugins/payments/docs/" target="_blank">Read the guide ↗</a></div>
+                </div>
+            </div></div>
+        </vdr-page-block>
+
         <vdr-page-block>
             <div class="card top-bar"><div class="card-block">
                 <div class="tabs" role="tablist">
@@ -341,6 +352,13 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                             <td class="num"><input class="form-input" type="number" min="0" step="0.01" style="width:120px" [ngModel]="surcharge(p).value" (ngModelChange)="setSurcharge(p, 'value', $event)"></td>
                             <td><input class="form-input" [ngModel]="surcharge(p).label" (ngModelChange)="setSurcharge(p, 'label', $event)" placeholder="e.g. PayPal handling fee"></td>
                         </tr></tbody></table>
+                    <h3 class="step-title" style="margin-top:14px">Hosted checkout page</h3>
+                    <p class="hint">The plugin serves a payment page at <span class="code-inline">/hulo-payments/pay/&lt;token&gt;</span> listing every enabled method in the order above. Your storefront calls <span class="code-inline">huloHostedCheckout(returnUrl: "https://shop.example.com/checkout/return")</span> and redirects to the URL it returns; the customer comes back to <span class="code-inline">returnUrl?order=CODE&amp;result=paid|pending</span>.</p>
+                    <div class="form-grid">
+                        <div class="form-row"><label>Shop name on the page</label><input class="form-input" style="width:100%" [(ngModel)]="cfg.hostedBrandName" placeholder="Your shop"></div>
+                        <div class="form-row"><label>Accent colour</label><div class="picker"><input class="form-input" style="width:120px" [(ngModel)]="cfg.hostedAccent" placeholder="#1d4ed8"><span class="swatch" [style.background]="cfg.hostedAccent" style="width:28px;height:28px;border-radius:8px;border:1px solid var(--gb-line)"></span></div></div>
+                        <div class="form-row wide"><label>Logo URL</label><input class="form-input" style="width:100%" [(ngModel)]="cfg.hostedLogoUrl" placeholder="https://…/logo.svg (optional)"></div>
+                    </div>
                     <h3 class="step-title" style="margin-top:14px">Operations</h3>
                     <div class="form-grid">
                         <div class="form-row"><label>Ops email for disputes and failed renewals</label><input class="form-input" style="width:100%" [(ngModel)]="cfg.opsEmail" placeholder="ops@example.com"></div>
@@ -737,6 +755,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         });
     }
 
+    configuredCount(): number { return (this.dash?.providers || []).filter((p: any) => p.configured).length; }
     linkProviders(): any[] { return (this.dash?.providers || []).filter((p: any) => p.configured && p.capabilities.payByLink); }
 
     channelNames(ids: number[]): string {

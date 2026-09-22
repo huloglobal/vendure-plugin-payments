@@ -10,6 +10,8 @@ import { LedgerService } from './core/ledger.service';
 import { PaymentsService } from './core/payments.service';
 import { WebhookController, webhookRawBodyMiddleware } from './core/webhook.controller';
 import { HuloPaymentsAdminController } from './core/admin.controller';
+import { HostedCheckoutController } from './core/hosted.controller';
+import { HostedCheckoutService } from './core/hosted.service';
 import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
 import { makeHandler } from './core/handlers';
@@ -19,6 +21,12 @@ import { stripeProvider } from './providers/stripe';
 import { adyenProvider } from './providers/adyen';
 import { paypalProvider } from './providers/paypal';
 import { mollieProvider } from './providers/mollie';
+import { squareProvider } from './providers/square';
+import { braintreeProvider } from './providers/braintree';
+import { gocardlessProvider } from './providers/gocardless';
+import { checkoutComProvider } from './providers/checkout-com';
+import { coinbaseProvider } from './providers/coinbase';
+import { bankTransferProvider, payLaterProvider } from './providers/offline';
 import { SubscriptionService } from './subscriptions/subscription.service';
 import { SubscriptionCron } from './subscriptions/subscription.cron';
 import { registerSubscriptionCustomFields } from './subscriptions/custom-fields';
@@ -62,7 +70,7 @@ const REVOCATION_URL = process.env.HULO_LICENCE_REVOCATION_URL || 'https://elite
 let cachedOptions: HuloPaymentsPluginOptions = { publicBaseUrl: 'http://localhost:3000' };
 export function getOptions(): HuloPaymentsPluginOptions { return cachedOptions; }
 
-for (const p of [stripeProvider, adyenProvider, paypalProvider, mollieProvider]) registerProvider(p);
+for (const p of [stripeProvider, adyenProvider, paypalProvider, mollieProvider, squareProvider, braintreeProvider, gocardlessProvider, checkoutComProvider, coinbaseProvider, bankTransferProvider, payLaterProvider]) registerProvider(p);
 
 async function notifyOps(event: { kind: string; subject: string; text: string; orderCode?: string; channelId?: number | null }): Promise<void> {
     const ops = getOptions().ops || {};
@@ -100,8 +108,8 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController],
-    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron],
+    controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController],
+    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },
     compatibility: '>=3.5.0 <4.0.0',
     configuration: (config: RuntimeVendureConfig) => {
