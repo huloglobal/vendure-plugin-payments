@@ -48,6 +48,11 @@ provider gets the same features and every payment lands in the same ledger:
 Works on MySQL, MariaDB and PostgreSQL. No provider SDKs: each provider is
 a few REST calls on the platform `fetch`.
 
+## In the admin
+
+- **Payments** (Sales → Payments): dashboard, transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings.
+- **Settings → Payment methods**: a **Connect a payment provider** button, and under every HULO method a panel that explains the provider, lists what customers can pay with, tests the keys you typed, shows the webhook URL to paste and whether its secret is saved, and walks through going live.
+
 ## Install
 
 ```bash

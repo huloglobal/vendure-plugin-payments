@@ -5,6 +5,12 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-09-23
+
+### Added
+- **Settings → Payment methods explains itself.** Any payment method that uses a HULO handler now shows a panel under the form: what the provider is, what customers can pay with, what the method supports (holds, refunds, subscriptions, saved cards, pay-by-link), where the keys come from with links to the provider dashboard, a **Test these keys** button that checks the unsaved form values, the webhook URL with a copy button and a saved/not-saved status, and the go-live checklist. Offline methods (bank transfer, pay later) get a plain-language "how it works" instead of keys and webhooks.
+- **Connect a payment provider** button on the payment-methods list, opening the Payments page on the Providers tab. The Payments page accepts `?tab=` and `?connect=<provider>` deep links.
+
 ## [0.2.0] — 2026-09-22
 
 ### Added

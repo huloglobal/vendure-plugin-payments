@@ -1,4 +1,5 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { ActivatedRoute } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService, ModalService, getServerLocation } from '@vendure/admin-ui/core';
 
@@ -662,7 +663,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     linkOrder = ''; linkProvider = ''; linkHours = 72; link: any = null; links: any = null; copied = false;
     connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
 
-    constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef) {}
+    constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef, private route: ActivatedRoute) {}
 
     /** Request options that authenticate against the API whether the admin UI
      *  uses cookie sessions (same origin) or bearer tokens (any origin). */
@@ -676,7 +677,15 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         return { ...extra, headers, withCredentials: true, observe: 'body', responseType: 'json' };
     }
 
-    ngOnInit() { this.checkClaim(false); this.reloadAll(); }
+    ngOnInit() {
+        // Deep links from Settings → Payment methods: ?tab=providers&connect=hulo-stripe
+        const q = this.route.snapshot.queryParamMap;
+        const tab = q.get('tab') as Tab | null;
+        if (tab && ['overview', 'transactions', 'subscriptions', 'paylink', 'providers', 'settings'].includes(tab)) this.tab = tab;
+        this.pendingConnect = q.get('connect') || '';
+        this.checkClaim(false); this.reloadAll();
+    }
+    private pendingConnect = '';
     ngOnDestroy() { this.stopClaimPoll(); }
 
     reloadAll() { this.loadMeta(); this.loadDashboard(); this.go(this.tab); }
@@ -708,7 +717,11 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     }
     loadLinks() { this.http.get<any>(`${API}/transactions`, this.h({ params: { kind: 'paylink', perPage: '20' } })).subscribe({ next: t => { this.links = t; this.cdr.markForCheck(); }, error: () => undefined }); }
     loadProviders() {
-        this.http.get<any>(`${API}/providers`, this.h()).subscribe({ next: p => { this.providers = p; this.cdr.markForCheck(); }, error: () => undefined });
+        this.http.get<any>(`${API}/providers`, this.h()).subscribe({ next: p => {
+            this.providers = p;
+            if (this.pendingConnect) { const target = (p?.providers || []).find((x: any) => x.code === this.pendingConnect); this.pendingConnect = ''; if (target && this.connectFor !== target.code) this.openConnect(target); }
+            this.cdr.markForCheck();
+        }, error: () => undefined });
         this.http.get<any[]>(`${API}/events`, this.h()).subscribe({ next: e => { this.events = e; this.cdr.markForCheck(); }, error: () => undefined });
     }
     loadSettings() { this.http.get<any[]>(`${API}/settings`, this.h()).subscribe({ next: s => { this.settingsList = s; this.cfg = s[this.cfgIdx] || s[0]; this.cdr.markForCheck(); }, error: () => undefined }); }
