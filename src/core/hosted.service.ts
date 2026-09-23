@@ -58,12 +58,12 @@ export class HostedCheckoutService implements OnModuleInit {
             )`);
     }
 
-    async create(orderId: ID, orderCode: string, channelId: number, returnUrl: string, cancelUrl: string, locale: string): Promise<HostedSession> {
+    async create(orderId: ID, orderCode: string, channelId: number, returnUrl: string, cancelUrl: string, locale: string, preferredMethod?: string): Promise<HostedSession> {
         const token = randomBytes(24).toString('hex');
         const expires = new Date(Date.now() + TTL_MS);
         await this.db.query(
-            `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-            [token, Number(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), expires.toISOString().slice(0, 19).replace('T', ' ')]);
+            `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, lastMethodCode, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+            [token, Number(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires.toISOString().slice(0, 19).replace('T', ' ')]);
         return (await this.find(token))!;
     }
 

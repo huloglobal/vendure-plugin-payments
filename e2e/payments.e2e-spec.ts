@@ -132,13 +132,14 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         await shop(`mutation($id: [ID!]!) { setOrderShippingMethod(shippingMethodId: $id) { ... on Order { code } ... on ErrorResult { errorCode message } } }`, { id: [m.eligibleShippingMethods[0].id] });
         const t: any = await shop(`mutation { transitionOrderToState(state: "ArrangingPayment") { ... on Order { state code } ... on ErrorResult { errorCode message } } }`);
         expect(t.transitionOrderToState.state).toBe('ArrangingPayment');
-        const h: any = await shop(`mutation { huloHostedCheckout(returnUrl: "https://shop.test/checkout/return") { url expiresAt } }`);
+        const h: any = await shop(`mutation { huloHostedCheckout(returnUrl: "https://shop.test/checkout/return", methodCode: "bank") { url expiresAt } }`);
         expect(h.huloHostedCheckout.url).toMatch(new RegExp(`^${BASE}/hulo-payments/pay/[a-f0-9]{48}$`));
         const page = await fetch(h.huloHostedCheckout.url);
         expect(page.status).toBe(200);
         const html = await page.text();
         expect(html).toContain('Bank transfer');
         expect(html).toContain(t.transitionOrderToState.code);
+        expect(html).toContain('var PRESELECT = "bank"');
         const sess = await fetch(`${h.huloHostedCheckout.url}/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'bank' }) });
         expect(sess.status).toBe(200);
         const sj: any = await sess.json();

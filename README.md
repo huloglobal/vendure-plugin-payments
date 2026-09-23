@@ -95,7 +95,8 @@ migration is Vendure's own for the three subscription custom fields on
 The simplest integration is the hosted page:
 
 ```graphql
-mutation { huloHostedCheckout(returnUrl: "https://shop.example.com/checkout/return", cancelUrl: "https://shop.example.com/checkout") { url expiresAt } }
+mutation { huloHostedCheckout(returnUrl: "https://shop.example.com/checkout/return", cancelUrl: "https://shop.example.com/checkout", methodCode: "paypal") { url expiresAt } }
+# methodCode is optional: it preselects that method on the page (one button per provider in your checkout).
 # → redirect the customer to `url`; they return to returnUrl?order=CODE&result=paid|pending
 ```
 

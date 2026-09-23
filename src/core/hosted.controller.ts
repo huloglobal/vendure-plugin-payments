@@ -64,6 +64,7 @@ export class HostedCheckoutController {
             ...(await this.brand(s.channelId, channelCode)), cancelUrl: s.cancelUrl,
             providers: providers.map(p => ({ methodCode: p.methodCode, provider: p.provider, name: p.name, wallets: p.capabilities?.wallets || [], offline: !!p.capabilities?.offline, surcharge: p.surcharge })),
             returned: !!(req.query && Object.keys(req.query).length),
+            preselect: s.lastMethodCode || '',
             lines: (order.lines || []).map(l => ({ name: l.productVariant?.name || 'Item', quantity: l.quantity, total: l.proratedLinePriceWithTax ?? l.linePriceWithTax })),
         });
         res.setHeader('cache-control', 'no-store');

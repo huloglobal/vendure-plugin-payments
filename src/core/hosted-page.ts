@@ -21,6 +21,8 @@ export interface HostedPageModel {
     providers: Array<{ methodCode: string; provider: string; name: string; wallets: string[]; offline: boolean; surcharge: any }>;
     /** Query string the provider returned with (redirect flows). */
     returned: boolean;
+    /** Method to open first (the storefront's choice, or the one used before a redirect). */
+    preselect?: string;
     lines: Array<{ name: string; quantity: number; total: number }>;
 }
 
@@ -86,6 +88,7 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
 (function(){
   var TOKEN = ${JSON.stringify(m.token)}, BASE = location.pathname.replace(/\\/$/, ''), AMOUNT_LABEL = ${JSON.stringify(money(m.amount, m.currency, m.locale))};
   var RETURNED = ${m.returned ? 'true' : 'false'};
+  var PRESELECT = ${JSON.stringify(m.preselect || '')};
   var $ = function(id){ return document.getElementById(id); };
   var current = null, session = null, stripe = null, elements = null, btInstance = null, sqCard = null, sqPayments = null;
   function status(kind, text){ var s = $('status'); s.className = 'status ' + kind; s.textContent = text; s.classList.remove('hidden'); }
@@ -133,7 +136,7 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
   if (RETURNED || q.get('returned') || q.get('payment_intent') || q.get('token') || q.get('cko') || q.get('billing_request') ) {
     status('info', 'Checking your payment…');
     post('/complete', { returned: true, metadata: { paymentIntentId: q.get('payment_intent') || undefined, paypalOrderId: q.get('token') || undefined } }).then(function(r){ if (r.paid) { status('ok', r.message || 'Payment received — taking you back to the shop…'); setTimeout(function(){ location.href = r.redirect; }, 900); } else status('bad', r.message || 'The payment was not completed — choose a method to try again.'); }).catch(function(e){ status('bad', e.message); });
-  } else if (document.querySelector('.method')) { select(document.querySelector('.method')); }
+  } else if (document.querySelector('.method')) { var pre = null; PRESELECT && document.querySelectorAll('.method').forEach(function(b){ if (b.dataset.method === PRESELECT) pre = b; }); select(pre || document.querySelector('.method')); }
 })();
 </script></body></html>`;
 }

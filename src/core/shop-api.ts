@@ -81,8 +81,8 @@ export const shopApiExtensions = gql`
         huloCancelSubscription(id: ID!, atPeriodEnd: Boolean): HuloSubscription!
         """Apply (or clear) the configured surcharge for a payment method to the active order."""
         huloApplyPaymentSurcharge(methodCode: String!): Order!
-        """A hosted checkout page for the active order: send the customer there, they come back to returnUrl with ?order=&result=."""
-        huloHostedCheckout(returnUrl: String!, cancelUrl: String, locale: String): HuloHostedCheckout!
+        """A hosted checkout page for the active order: send the customer there, they come back to returnUrl with ?order=&result=. methodCode preselects one of the enabled methods."""
+        huloHostedCheckout(returnUrl: String!, cancelUrl: String, locale: String, methodCode: String): HuloHostedCheckout!
     }
 `;
 
@@ -150,10 +150,10 @@ export class HuloPaymentsShopResolver {
     @Mutation()
     @Transaction()
     @Allow(Permission.Public)
-    async huloHostedCheckout(@Ctx() ctx: RequestContext, @Args() args: { returnUrl: string; cancelUrl?: string; locale?: string }) {
+    async huloHostedCheckout(@Ctx() ctx: RequestContext, @Args() args: { returnUrl: string; cancelUrl?: string; locale?: string; methodCode?: string }) {
         const order = await this.payments.activeOrderOrThrow(ctx);
         if (!/^https?:\/\//.test(args.returnUrl || '')) throw new UserInputError('returnUrl must be an absolute http(s) URL');
-        const s = await this.hosted.create(order.id, order.code, ctx.channelId as number, args.returnUrl, args.cancelUrl || args.returnUrl, args.locale || ctx.languageCode || 'en-GB');
+        const s = await this.hosted.create(order.id, order.code, ctx.channelId as number, args.returnUrl, args.cancelUrl || args.returnUrl, args.locale || ctx.languageCode || 'en-GB', args.methodCode);
         return { url: `${getRuntime().publicBaseUrl().replace(/\/$/, '')}/hulo-payments/pay/${s.token}`, expiresAt: new Date(s.expiresAt) };
     }
 
