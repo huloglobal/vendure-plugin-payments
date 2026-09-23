@@ -2,6 +2,8 @@ import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnDestroy, OnIni
 import { HttpClient } from '@angular/common/http';
 import { UntypedFormGroup } from '@angular/forms';
 import { CustomDetailComponent, getServerLocation } from '@vendure/admin-ui/core';
+import { HuloProvidersCacheService } from '../providers-cache.service';
+import { BLURBS, PAY_WITH, WEBHOOK_HINTS } from './provider-copy';
 import { Observable, Subscription } from 'rxjs';
 
 // Resolved lazily: this component lives in the eagerly-loaded shared module, and
@@ -126,10 +128,10 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
     testing = false; testResult: { ok: boolean; message: string } | null = null; copied = false;
     private meta: any = null; private subs: Subscription[] = [];
 
-    constructor(private http: HttpClient, private cdr: ChangeDetectorRef) {}
+    constructor(private http: HttpClient, private cdr: ChangeDetectorRef, private cache: HuloProvidersCacheService) {}
 
     ngOnInit() {
-        this.http.get<any>(`${api()}/providers`, this.h()).subscribe({ next: m => { this.meta = m; this.refresh(); }, error: () => undefined });
+        this.subs.push(this.cache.providers().subscribe(m => { if (m) { this.meta = m; this.refresh(); } }));
         const handler = this.detailForm?.get('handler');
         if (handler) this.subs.push(handler.valueChanges.subscribe(() => this.refresh()));
         if (this.entity$) this.subs.push(this.entity$.subscribe(() => this.refresh()));
@@ -193,42 +195,3 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
         return { headers, withCredentials: true, observe: 'body', responseType: 'json' };
     }
 }
-
-const BLURBS: Record<string, string> = {
-    'hulo-stripe': 'Card payments through your own Stripe account, with Apple Pay, Google Pay and Link shown automatically when the customer\'s device supports them. Money lands in Stripe; Vendure records every payment, refund and dispute.',
-    'hulo-adyen': 'Adyen Drop-in: cards, wallets and over a hundred local methods (iDEAL, Klarna, Bancontact…) from one integration, settled to your Adyen merchant account.',
-    'hulo-paypal': 'PayPal buttons at checkout: PayPal balance, Pay Later and Venmo (US). Choose whether to take the money at once or hold it and capture from the order page.',
-    'hulo-mollie': 'Mollie hosted checkout: iDEAL, cards, Bancontact, SEPA and Klarna, with automatic confirmation when the customer returns.',
-    'hulo-square': 'Square Web Payments: cards, Apple Pay, Google Pay, Cash App Pay and Afterpay, charged to your Square location.',
-    'hulo-braintree': 'Braintree Drop-in: cards, PayPal, Venmo, Apple Pay and Google Pay through your Braintree merchant account.',
-    'hulo-gocardless': 'Direct debit through GoCardless: Bacs, SEPA and ACH mandates plus Instant Bank Pay. Best for repeat and subscription billing.',
-    'hulo-checkout-com': 'Checkout.com hosted payment page: cards, wallets, Klarna and iDEAL, with holds, refunds and payment links.',
-    'hulo-coinbase': 'Crypto payments through Coinbase Commerce: the customer pays in Bitcoin, Ethereum, USDC and others; you receive the settled amount.',
-    'hulo-bank-transfer': 'The customer transfers the money from their bank using the account details you enter above. The order is placed straight away and you mark it paid from the order page when the money arrives.',
-    'hulo-pay-later': 'Invoice / on-account terms: the order is placed and the customer has the number of days you set to pay. Mark it paid from the order page.',
-};
-
-const PAY_WITH: Record<string, string[]> = {
-    'hulo-stripe': ['Visa', 'Mastercard', 'Amex', 'Apple Pay', 'Google Pay', 'Link', 'Klarna', '3-D Secure'],
-    'hulo-adyen': ['Cards', 'Apple Pay', 'Google Pay', 'iDEAL', 'Klarna', 'Bancontact', '100+ local methods'],
-    'hulo-paypal': ['PayPal', 'Pay Later', 'Venmo (US)', 'Cards via PayPal'],
-    'hulo-mollie': ['iDEAL', 'Cards', 'Bancontact', 'SEPA', 'Klarna'],
-    'hulo-square': ['Cards', 'Apple Pay', 'Google Pay', 'Cash App Pay', 'Afterpay'],
-    'hulo-braintree': ['Cards', 'PayPal', 'Venmo', 'Apple Pay', 'Google Pay'],
-    'hulo-gocardless': ['Bacs', 'SEPA', 'ACH', 'Instant Bank Pay'],
-    'hulo-checkout-com': ['Cards', 'Apple Pay', 'Google Pay', 'Klarna', 'iDEAL'],
-    'hulo-coinbase': ['Bitcoin', 'Ethereum', 'USDC', 'Other crypto'],
-    'hulo-bank-transfer': ['Bank transfer (Faster Payments / BACS / SEPA)'],
-    'hulo-pay-later': ['Invoice, paid within your terms'],
-};
-
-const WEBHOOK_HINTS: Record<string, string> = {
-    'hulo-stripe': 'Stripe → Developers → Webhooks → Add endpoint. Paste this URL, select payment_intent.*, charge.*, checkout.session.completed, invoice.* and customer.subscription.* events, then copy the signing secret (whsec_…) into "Webhook signing secret" above.',
-    'hulo-adyen': 'Customer Area → Developers → Webhooks → Standard webhook. Paste this URL, generate an HMAC key and put it in "Webhook HMAC key" above.',
-    'hulo-paypal': 'developer.paypal.com → your app → Webhooks → Add. Paste this URL, tick all payment, dispute and billing events, then put the webhook ID in "Webhook ID" above.',
-    'hulo-mollie': 'Nothing to do: Mollie calls this URL automatically and the plugin fetches the payment back to confirm it.',
-    'hulo-square': 'Developer Dashboard → Webhooks → Add subscription with this URL (payment.* and refund.* events); paste its signature key above.',
-    'hulo-gocardless': 'Dashboard → Developers → Webhook endpoints → Create. Paste this URL and put the secret in "Webhook secret" above.',
-    'hulo-checkout-com': 'Dashboard → Developers → Workflows → new workflow with a webhook action to this URL and an HMAC signature; paste the signature key above.',
-    'hulo-coinbase': 'Settings → Notifications → Webhook subscriptions → add this URL; paste the shared secret above.',
-};

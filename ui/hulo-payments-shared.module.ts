@@ -1,7 +1,8 @@
 import { NgModule } from '@angular/core';
 import { Router } from '@angular/router';
-import { SharedModule, addActionBarItem, addNavMenuItem, registerCustomDetailComponent } from '@vendure/admin-ui/core';
+import { SharedModule, addActionBarItem, addNavMenuItem, registerCustomDetailComponent, registerDataTableComponent } from '@vendure/admin-ui/core';
 import { HuloPaymentMethodPanelComponent } from './components/payment-method-panel.component';
+import { HuloPaymentMethodNameCellComponent } from './components/payment-method-name-cell.component';
 
 /**
  * Always-loaded part of the extension: the "Payments" nav entry, a
@@ -10,7 +11,7 @@ import { HuloPaymentMethodPanelComponent } from './components/payment-method-pan
  */
 @NgModule({
     imports: [SharedModule],
-    declarations: [HuloPaymentMethodPanelComponent],
+    declarations: [HuloPaymentMethodPanelComponent, HuloPaymentMethodNameCellComponent],
     providers: [
         addNavMenuItem(
             {
@@ -37,6 +38,12 @@ import { HuloPaymentMethodPanelComponent } from './components/payment-method-pan
         registerCustomDetailComponent({
             locationId: 'payment-method-detail',
             component: HuloPaymentMethodPanelComponent,
+        }),
+        // Name cell of Settings → Payment methods: brand mark + one status word + first line of the description.
+        registerDataTableComponent({
+            tableId: 'payment-method-list',
+            columnId: 'name',
+            component: HuloPaymentMethodNameCellComponent,
         }),
     ],
 })

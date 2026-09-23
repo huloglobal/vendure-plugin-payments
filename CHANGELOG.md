@@ -5,6 +5,12 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-09-23
+
+### Changed
+- **Settings → Payment methods reads at a glance.** The Name column of the list now shows, for every HULO method, a brand mark, the name, one status word (Live / Test mode / Ready, disabled / Not set up) and the first line of the description — so twenty methods scan in seconds without opening each one. Other plugins' methods are untouched.
+- **Providers tab regrouped.** Providers are listed under four plain headings — Cards & wallets; PayPal, bank & local methods; Crypto; Offline & on account — as compact rows (mark, name, what customers can pay with, one status word). A row expands to the details, dashboard links, its payment methods and the Connect panel; nothing else is on screen until you ask for it.
+
 ## [0.2.1] — 2026-09-23
 
 ### Added

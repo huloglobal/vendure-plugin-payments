@@ -1,5 +1,6 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
+import { BLURBS, MARKS, PAY_WITH, PROVIDER_GROUPS, STATUS_LABEL, methodStatus } from './provider-copy';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService, ModalService, getServerLocation } from '@vendure/admin-ui/core';
 
@@ -277,45 +278,63 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
 
         <!-- PROVIDERS -->
         <vdr-page-block *ngIf="tab==='providers' && providers">
-            <div class="prov-grid">
-                <div class="prov-card" *ngFor="let p of providers.providers">
-                    <h4>{{ p.name }} <span class="pill" [class.ok]="p.methods.length">{{ p.methods.length ? p.methods.length + ' method(s)' : 'not configured' }}</span> <span class="pill" *ngIf="p.freeTier">free tier</span><span class="pill" *ngIf="!p.freeTier && !dash?.premium">licence required</span></h4>
-                    <div class="caps">
-                        <span class="cap" [class.on]="p.capabilities.session">hosted session</span><span class="cap" [class.on]="p.capabilities.manualCapture">manual capture</span><span class="cap" [class.on]="p.capabilities.partialRefund">partial refunds</span><span class="cap" [class.on]="p.capabilities.savedMethods">saved cards</span><span class="cap" [class.on]="p.capabilities.subscriptions">subscriptions</span><span class="cap" [class.on]="p.capabilities.payByLink">pay by link</span><span class="cap" [class.on]="p.capabilities.disputes">disputes</span>
-                    </div>
-                    <div class="small muted">Wallets: {{ p.capabilities.wallets.join(', ') }}</div>
-                    <div class="picker small" style="margin-top:8px">
-                        <a [href]="p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>
-                        <a *ngIf="p.links.keys" [href]="p.links.keys" target="_blank" rel="noopener">API keys ↗</a>
-                        <a *ngIf="p.links.webhooks" [href]="p.links.webhooks" target="_blank" rel="noopener">Webhooks ↗</a>
-                        <a *ngIf="p.links.docs" [href]="p.links.docs" target="_blank" rel="noopener">Docs ↗</a>
-                    </div>
-                    <table class="table" *ngIf="p.methods.length" style="margin-top:8px">
-                        <thead><tr><th>Method</th><th>Env</th><th>Channels</th><th>Webhook</th><th>Enabled</th></tr></thead>
-                        <tbody><tr *ngFor="let m of p.methods"><td><a [routerLink]="['/settings', 'payment-methods', m.id]">{{ m.code }}</a></td><td>{{ m.environment }}</td><td>{{ channelNames(m.channelIds) }}</td><td><span class="pill" [class.ok]="m.webhookConfigured" [class.pending]="!m.webhookConfigured">{{ m.webhookConfigured ? 'configured' : 'missing' }}</span></td><td><span class="pill" [class.ok]="m.enabled">{{ m.enabled ? 'on' : 'off' }}</span></td></tr></tbody>
-                    </table>
-                    <div class="picker" style="margin-top:10px">
-                        <button class="gbtn gbtn-primary gbtn-sm" (click)="openConnect(p)" [disabled]="!p.freeTier && !dash?.premium">{{ connectFor === p.code ? 'Close' : (p.methods.length ? 'Reconnect / update keys' : 'Connect ' + p.name + ' →') }}</button>
-                    </div>
+            <p class="hint" style="margin:0 0 14px">Pick what your customers should be able to pay with. One card provider is enough for most shops; add PayPal or a local method next to it if customers ask for it. Every provider works the same way once connected: same ledger, same refunds, same dashboard.</p>
+            <div class="prov-group" *ngFor="let g of providerGroups">
+                <div class="prov-group-head">
+                    <h3>{{ g.title }}</h3>
+                    <p class="hint" style="margin:0">{{ g.hint }}</p>
+                </div>
+                <div class="prov-list">
+                    <div class="prov-row" *ngFor="let p of groupProviders(g)" [class.open]="expanded === p.code">
+                        <button type="button" class="prov-summary" (click)="toggleProvider(p)" [attr.aria-expanded]="expanded === p.code">
+                            <span class="prov-mark" [style.background]="mark(p.code).bg" aria-hidden="true">{{ mark(p.code).text }}</span>
+                            <span class="prov-main">
+                                <span class="prov-name">{{ p.name }} <span class="pill tier" [class.free]="p.freeTier">{{ p.freeTier ? 'Free' : 'Licensed' }}</span></span>
+                                <span class="prov-pay">{{ payWith(p.code) }}</span>
+                            </span>
+                            <span class="prov-state" [class]="'prov-state ' + providerState(p).kind">{{ providerState(p).label }}</span>
+                            <span class="prov-chevron" aria-hidden="true">{{ expanded === p.code ? '▾' : '▸' }}</span>
+                        </button>
+                        <div class="prov-detail" *ngIf="expanded === p.code">
+                            <p class="prov-blurb">{{ blurb(p.code) }}</p>
+                            <div class="caps">
+                                <span class="cap" [class.on]="p.capabilities.manualCapture">holds</span><span class="cap" [class.on]="p.capabilities.refunds">refunds</span><span class="cap" [class.on]="p.capabilities.subscriptions">subscriptions</span><span class="cap" [class.on]="p.capabilities.savedCards">saved cards</span><span class="cap" [class.on]="p.capabilities.payLinks">pay-by-link</span><span class="cap" [class.on]="p.capabilities.disputes">disputes</span><span class="cap" [class.on]="p.capabilities.offline">offline</span>
+                            </div>
+                            <div class="picker small" style="margin-top:8px">
+                                <a *ngIf="p.links?.dashboard" [href]="p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>
+                                <a *ngIf="p.links?.keys" [href]="p.links.keys" target="_blank" rel="noopener">API keys ↗</a>
+                                <a *ngIf="p.links?.webhooks" [href]="p.links.webhooks" target="_blank" rel="noopener">Webhooks ↗</a>
+                                <a *ngIf="p.links?.docs" [href]="p.links.docs" target="_blank" rel="noopener">Docs ↗</a>
+                            </div>
+                            <table class="table" *ngIf="p.methods.length" style="margin-top:8px">
+                                <thead><tr><th>Payment method</th><th>Status</th><th>Channels</th><th>Webhook</th></tr></thead>
+                                <tbody><tr *ngFor="let m of p.methods"><td><a [routerLink]="['/settings', 'payment-methods', m.id]">{{ m.code }}</a></td><td><span class="prov-state" [class]="'prov-state ' + methodState(m, p.code).kind">{{ methodState(m, p.code).label }}</span></td><td>{{ channelNames(m.channelIds) }}</td><td>{{ p.capabilities.offline ? '—' : (m.webhookConfigured ? '✓ secret saved' : 'not set') }}</td></tr></tbody>
+                            </table>
+                            <div class="picker" style="margin-top:10px">
+                                <button class="gbtn gbtn-primary gbtn-sm" (click)="openConnect(p)" [disabled]="!p.freeTier && !dash?.premium">{{ connectFor === p.code ? 'Close' : (p.methods.length ? 'Reconnect / update keys' : 'Connect ' + p.name + ' →') }}</button>
+                                <span class="small muted" *ngIf="!p.freeTier && !dash?.premium">Needs a licence — see Overview.</span>
+                            </div>
                     <div *ngIf="connectFor === p.code" class="connect-panel">
-                        <p class="hint" style="margin:0 0 10px">Paste the keys from the <a [href]="p.links.keys || p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>. Connect checks them with {{ p.name }}, {{ p.code === 'hulo-mollie' ? 'needs no webhook setup' : 'registers the webhook for you' }}, and creates the payment method — nothing to copy back by hand.</p>
-                        <div class="form-grid">
-                            <div class="form-row"><label>Channel</label><select class="form-select" [(ngModel)]="connectChannel"><option *ngFor="let c of providers.channels" [ngValue]="c.id">{{ c.code === '__default_channel__' ? 'Default channel' : c.code }}</option></select></div>
-                            <div class="form-row" *ngFor="let f of p.connectFields">
-                                <label>{{ f.label }}</label>
-                                <select class="form-select" *ngIf="f.options" [(ngModel)]="connectArgs[f.name]"><option *ngFor="let o of f.options" [value]="o">{{ o }}</option></select>
-                                <input class="form-input" *ngIf="!f.options" [type]="f.secret ? 'password' : 'text'" autocomplete="off" [(ngModel)]="connectArgs[f.name]" [placeholder]="f.secret ? '••••••••' : ''" style="width:100%">
-                                <div class="small muted" *ngIf="f.description">{{ f.description }}</div>
+                            <p class="hint" style="margin:0 0 10px">Paste the keys from the <a [href]="p.links.keys || p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>. Connect checks them with {{ p.name }}, {{ p.code === 'hulo-mollie' ? 'needs no webhook setup' : 'registers the webhook for you' }}, and creates the payment method — nothing to copy back by hand.</p>
+                            <div class="form-grid">
+                                <div class="form-row"><label>Channel</label><select class="form-select" [(ngModel)]="connectChannel"><option *ngFor="let c of providers.channels" [ngValue]="c.id">{{ c.code === '__default_channel__' ? 'Default channel' : c.code }}</option></select></div>
+                                <div class="form-row" *ngFor="let f of p.connectFields">
+                                    <label>{{ f.label }}</label>
+                                    <select class="form-select" *ngIf="f.options" [(ngModel)]="connectArgs[f.name]"><option *ngFor="let o of f.options" [value]="o">{{ o }}</option></select>
+                                    <input class="form-input" *ngIf="!f.options" [type]="f.secret ? 'password' : 'text'" autocomplete="off" [(ngModel)]="connectArgs[f.name]" [placeholder]="f.secret ? '••••••••' : ''" style="width:100%">
+                                    <div class="small muted" *ngIf="f.description">{{ f.description }}</div>
+                                </div>
+                            </div>
+                            <div class="picker" style="margin-top:12px">
+                                <button class="gbtn gbtn-outline gbtn-sm" (click)="testConnect(p)" [disabled]="busy">{{ busy ? 'Checking…' : 'Test connection' }}</button>
+                                <button class="gbtn gbtn-primary gbtn-sm" (click)="connect(p)" [disabled]="busy">{{ busy ? 'Connecting…' : (p.methods.length ? 'Update & reconnect' : 'Connect & create payment method') }}</button>
+                            </div>
+                            <div *ngIf="connectResult" class="status-sentence" [class.status-danger]="!connectResult.ok" style="margin-top:12px">
+                                <strong>{{ connectResult.ok ? '✓' : '✕' }}</strong> {{ connectResult.message }}
+                                <div *ngIf="connectResult.webhook" class="small" style="margin-top:4px">Webhook: {{ connectResult.webhook.configured ? 'configured' : 'not configured' }}{{ connectResult.webhook.note ? ' — ' + connectResult.webhook.note : '' }}</div>
+                                <div *ngIf="connectResult.method" class="small" style="margin-top:4px">Payment method <a [routerLink]="['/settings', 'payment-methods', connectResult.method.id]">{{ connectResult.method.code }}</a> {{ connectResult.method.updated ? 'updated' : 'created' }} and {{ connectResult.method.enabled ? 'enabled' : 'left disabled' }}.</div>
                             </div>
                         </div>
-                        <div class="picker" style="margin-top:12px">
-                            <button class="gbtn gbtn-outline gbtn-sm" (click)="testConnect(p)" [disabled]="busy">{{ busy ? 'Checking…' : 'Test connection' }}</button>
-                            <button class="gbtn gbtn-primary gbtn-sm" (click)="connect(p)" [disabled]="busy">{{ busy ? 'Connecting…' : (p.methods.length ? 'Update & reconnect' : 'Connect & create payment method') }}</button>
-                        </div>
-                        <div *ngIf="connectResult" class="status-sentence" [class.status-danger]="!connectResult.ok" style="margin-top:12px">
-                            <strong>{{ connectResult.ok ? '✓' : '✕' }}</strong> {{ connectResult.message }}
-                            <div *ngIf="connectResult.webhook" class="small" style="margin-top:4px">Webhook: {{ connectResult.webhook.configured ? 'configured' : 'not configured' }}{{ connectResult.webhook.note ? ' — ' + connectResult.webhook.note : '' }}</div>
-                            <div *ngIf="connectResult.method" class="small" style="margin-top:4px">Payment method <a [routerLink]="['/settings', 'payment-methods', connectResult.method.id]">{{ connectResult.method.code }}</a> {{ connectResult.method.updated ? 'updated' : 'created' }} and {{ connectResult.method.enabled ? 'enabled' : 'left disabled' }}.</div>
                         </div>
                     </div>
                 </div>
@@ -371,6 +390,26 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         </vdr-page-block>
 `,
     styles: [`
+        .prov-group { margin-bottom: 18px; }
+        .prov-group-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+        .prov-group-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+        .prov-list { border: 1px solid var(--color-weight-200, #e2e8f0); border-radius: 10px; overflow: hidden; background: var(--color-component-bg-100, #fff); }
+        .prov-row + .prov-row { border-top: 1px solid var(--color-weight-200, #e2e8f0); }
+        .prov-summary { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 11px 14px; background: none; border: 0; cursor: pointer; font: inherit; color: inherit; }
+        .prov-summary:hover, .prov-row.open > .prov-summary { background: var(--color-weight-100, #f8fafc); }
+        .prov-mark { flex: none; width: 32px; height: 32px; border-radius: 8px; color: #fff; font-weight: 700; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+        .prov-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        .prov-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+        .prov-pay { font-size: 12.5px; color: var(--color-weight-500, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .pill.tier { font-size: 10.5px; background: #fef3c7; color: #92400e; } .pill.tier.free { background: #dcfce7; color: #166534; }
+        .prov-state { flex: none; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+        .prov-state.live { background: #dcfce7; color: #166534; } .prov-state.test { background: #fef3c7; color: #92400e; }
+        .prov-state.disabled { background: #e2e8f0; color: #334155; } .prov-state.not-set-up { background: #f1f5f9; color: #64748b; border: 1px dashed #cbd5e1; }
+        .prov-state.none { background: transparent; color: #94a3b8; border: 1px dashed #cbd5e1; }
+        .prov-chevron { flex: none; color: #94a3b8; width: 14px; text-align: center; }
+        .prov-detail { padding: 4px 14px 16px 58px; border-top: 1px dashed var(--color-weight-200, #e2e8f0); }
+        .prov-blurb { margin: 8px 0 10px; font-size: 13px; line-height: 1.5; color: var(--color-weight-700, #334155); max-width: 760px; }
+
         :host { display: block; color: var(--gb-strong); }
 
         /* ── Verified theme tokens (HULO admin design system) ─────────
@@ -775,7 +814,34 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         const chans: any[] = this.providers?.channels || [];
         return (ids || []).map(id => { const c = chans.find(x => x.id === id); return c ? (c.code === '__default_channel__' ? 'default' : c.code) : String(id); }).join(', ') || 'all';
     }
+    providerGroups = PROVIDER_GROUPS;
+    expanded = '';
+    groupProviders(g: { codes: string[] }): any[] {
+        const all: any[] = this.providers?.providers || [];
+        const listed = g.codes.map(c => all.find(p => p.code === c)).filter(Boolean);
+        // Anything the server knows that no group lists still shows up, at the end of the last group.
+        if (g === PROVIDER_GROUPS[PROVIDER_GROUPS.length - 1]) {
+            const known = new Set(PROVIDER_GROUPS.flatMap(x => x.codes));
+            listed.push(...all.filter(p => !known.has(p.code)));
+        }
+        return listed;
+    }
+    toggleProvider(p: any) { this.expanded = this.expanded === p.code ? '' : p.code; if (this.expanded !== p.code) this.connectFor = ''; }
+    mark(code: string) { return MARKS[code] || { text: code.replace('hulo-', '').slice(0, 1).toUpperCase(), bg: '#1d4ed8' }; }
+    payWith(code: string): string { return (PAY_WITH[code] || []).join(' · '); }
+    blurb(code: string): string { return BLURBS[code] || ''; }
+    methodState(m: any, code: string): { kind: string; label: string } { const st = methodStatus({ enabled: !!m.enabled, environment: m.environment, args: m.args }, code); return { kind: st, label: STATUS_LABEL[st] }; }
+    /** The best state among a provider's methods: live beats test beats ready beats not-set-up beats none. */
+    providerState(p: any): { kind: string; label: string } {
+        const order = ['live', 'test', 'disabled', 'not-set-up'];
+        const states = (p.methods || []).map((m: any) => methodStatus({ enabled: !!m.enabled, environment: m.environment, args: m.args }, p.code));
+        if (!states.length) return { kind: 'none', label: 'Not added' };
+        const best = order.find(o => states.includes(o as any)) as any;
+        return { kind: best, label: STATUS_LABEL[best as keyof typeof STATUS_LABEL] };
+    }
+
     openConnect(p: any) {
+        this.expanded = p.code;
         if (this.connectFor === p.code) { this.connectFor = ''; return; }
         this.connectFor = p.code; this.connectResult = null;
         this.connectChannel = (this.providers?.channels || [])[0]?.id || 1;
