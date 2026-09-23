@@ -50,7 +50,7 @@ a few REST calls on the platform `fetch`.
 
 ## In the admin
 
-- **Payments** (Sales → Payments): dashboard, transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings.
+- **Payments** (Sales → Payments): dashboard, a **Payment methods** tab (every provider × every channel, Add / Connect per cell), transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings.
 - **Settings → Payment methods**: a **Connect a payment provider** button; every HULO method in the list shows a brand mark, one status word (Live / Test mode / Ready, disabled / Not set up) and the first line of its description; and under each method a panel that explains the provider, lists what customers can pay with, tests the keys you typed, shows the webhook URL to paste and whether its secret is saved, and walks through going live.
 
 ## Install

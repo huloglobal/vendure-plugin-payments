@@ -37,6 +37,21 @@ export const HANDLER_DESCRIPTIONS: Record<ProviderCode, string> = {
     'hulo-pay-later': 'HULO Payments — Pay later / invoice (on account, due in N days)',
 };
 
+/** Short names for payment methods the plugin creates itself ("Provider · what customers pay with"). */
+export const HANDLER_SHORT_NAMES: Record<ProviderCode, string> = {
+    'hulo-stripe': 'Stripe · cards, Apple Pay, Google Pay, Link',
+    'hulo-adyen': 'Adyen · cards, wallets & 100+ local methods',
+    'hulo-paypal': 'PayPal · PayPal, Pay Later, Venmo',
+    'hulo-mollie': 'Mollie · iDEAL, cards, Bancontact, SEPA, Klarna',
+    'hulo-square': 'Square · cards, Apple Pay, Google Pay, Cash App, Afterpay',
+    'hulo-braintree': 'Braintree · cards, PayPal, Venmo, wallets',
+    'hulo-gocardless': 'GoCardless · Bacs, SEPA & ACH direct debit',
+    'hulo-checkout-com': 'Checkout.com · hosted page: cards, wallets, Klarna, iDEAL',
+    'hulo-coinbase': 'Coinbase Commerce · Bitcoin, Ethereum, USDC',
+    'hulo-bank-transfer': 'Bank transfer · pay from your bank, order reserved',
+    'hulo-pay-later': 'Pay later / invoice · on account, due in 30 days',
+};
+
 /** Handler args per provider — these are the credentials admins fill in on the PaymentMethod. */
 export const HANDLER_ARGS: Record<ProviderCode, ConfigArgs> = {
     'hulo-stripe': {

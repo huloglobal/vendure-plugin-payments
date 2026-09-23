@@ -25,14 +25,14 @@ import { HuloPaymentMethodNameCellComponent } from './components/payment-method-
         ),
         addActionBarItem({
             id: 'hulo-payments-connect',
-            label: 'Connect a payment provider',
+            label: 'All payment providers',
             locationId: 'payment-method-list',
             icon: 'plugin',
             buttonColor: 'primary',
             buttonStyle: 'outline',
             requiresPermission: 'UpdateSettings',
             onClick: (_event, context) => {
-                context.injector.get(Router).navigate(['/extensions/hulo-payments'], { queryParams: { tab: 'providers' } });
+                context.injector.get(Router).navigate(['/extensions/hulo-payments'], { queryParams: { tab: 'methods' } });
             },
         }),
         registerCustomDetailComponent({

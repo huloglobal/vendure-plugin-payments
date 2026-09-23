@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
 import { Ctx, LanguageCode, OrderService, PaymentMethodService, Permission, RequestContext, TransactionalConnection } from '@vendure/core';
 import type { Response } from 'express';
 import { allProviders, getProvider, ProviderArgs } from './provider';
-import { HANDLER_ARGS } from './handlers';
+import { HANDLER_SHORT_NAMES, HANDLER_ARGS } from './handlers';
 import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from './credentials';
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
@@ -179,6 +179,42 @@ export class HuloPaymentsAdminController {
             }
             clearCredentialCache();
             return res.status(200).json({ ok: true, message: check.message, account: check.account, environment: check.environment, webhook: webhook ? { ref: webhook.ref || null, note: webhook.note || null, configured: !!(args.webhookSecret || args.hmacKey || args.webhookId) } : { configured: true, note: 'No webhook configuration is needed for this provider.' }, method: { id: method.id, code: method.code, enabled: method.enabled, channelId, updated: !!existing } });
+        } catch (e) { return fail(res, e); }
+    }
+
+    /**
+     * Add a provider to a channel as a disabled payment method with default
+     * args and a descriptive name, so every option is visible in Settings →
+     * Payment methods (and in the plugin's Methods tab) before any keys exist.
+     * Connect, or the method page, fills the keys in later.
+     */
+    @Post('methods')
+    async addMethod(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!ctx.userHasPermissions([Permission.CreatePaymentMethod])) return res.status(403).json({ error: 'forbidden' });
+        const code = String(body?.provider || '');
+        const provider = getProvider(code);
+        if (!provider) return res.status(404).json({ error: 'unknown provider' });
+        try {
+            const channelId = Number(body?.channelId) || (ctx.channelId as number);
+            const existing = (await listHuloMethods(this.connection, channelId)).find(m => m.handlerCode === code && m.channelIds.includes(channelId));
+            if (existing) return res.status(200).json({ ok: true, created: false, method: { id: existing.paymentMethodId, code: existing.paymentMethodCode } });
+            const adminCtx = await this.payments.adminCtx(channelId);
+            const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel WHERE id = ?`, [channelId]).catch(() => []);
+            const channelCode = String(channels[0]?.code || '');
+            const suffix = channelId > 1 && channelCode ? `-${channelCode.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20)}` : '';
+            const taken = new Set(((await this.connection.rawConnection.query(`SELECT code FROM payment_method`).catch(() => [])) as any[]).map(r => String(r.code)));
+            let methodCode = `${code}${suffix}`.slice(0, 60);
+            for (let n = 2; taken.has(methodCode) && n < 50; n++) methodCode = `${code}${suffix}-${n}`.slice(0, 60);
+            const args = this.withDefaults(code, {});
+            const handler = { code, arguments: Object.entries(args).map(([name, value]) => ({ name, value: String(value ?? '') })) };
+            const name = (HANDLER_SHORT_NAMES as any)[code] || `${provider.name} (HULO Payments)`;
+            const description = provider.capabilities.offline
+                ? 'Not enabled yet: check the details on this method, then enable it. Runs through the HULO Payments plugin.'
+                : 'Not set up yet: open this method and paste the keys, or use Connect on the Payments page, then enable it. Runs through the HULO Payments plugin with the same ledger, refunds and dashboard as every other provider.';
+            const method: any = await this.paymentMethodService.create(adminCtx, { code: methodCode, enabled: false, handler, translations: [{ languageCode: LanguageCode.en, name, description }] } as any);
+            clearCredentialCache();
+            return res.status(200).json({ ok: true, created: true, method: { id: method.id, code: method.code } });
         } catch (e) { return fail(res, e); }
     }
 

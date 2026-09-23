@@ -158,6 +158,26 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         expect(ledgerRows.items[0]).toMatchObject({ provider: 'hulo-bank-transfer', orderCode: t.transitionOrderToState.code, amount: 1999 });
     });
 
+    it('adds a provider to a channel as a disabled, named placeholder method', async () => {
+        const adminToken = (adminClient as any).getAuthToken?.() as string | undefined;
+        const r = await fetch(`${BASE}/hulo-payments/methods`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ provider: 'hulo-adyen', channelId: 1 }) });
+        expect(r.status).toBe(200);
+        const j: any = await r.json();
+        expect(j).toMatchObject({ ok: true, created: true, method: { code: 'hulo-adyen' } });
+        const pm: any = await adminClient.query(gql`query($id: ID!) { paymentMethod(id: $id) { code name enabled description handler { code args { name value } } } }`, { id: j.method.id });
+        expect(pm.paymentMethod).toMatchObject({ code: 'hulo-adyen', enabled: false, name: 'Adyen · cards, wallets & 100+ local methods' });
+        expect(pm.paymentMethod.handler.code).toBe('hulo-adyen');
+        expect(pm.paymentMethod.handler.args.find((a: any) => a.name === 'environment').value).toBe('test');
+        expect(pm.paymentMethod.description).toContain('Not set up yet');
+        // Idempotent: a second call reports the existing method.
+        const again: any = await (await fetch(`${BASE}/hulo-payments/methods`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${adminToken}` }, body: JSON.stringify({ provider: 'hulo-adyen', channelId: 1 }) })).json();
+        expect(again).toMatchObject({ ok: true, created: false, method: { code: 'hulo-adyen' } });
+        // And the providers endpoint shows it as a method of Adyen on channel 1.
+        const prov: any = await (await fetch(`${BASE}/hulo-payments/providers`, { headers: { authorization: `Bearer ${adminToken}` } })).json();
+        const adyen = prov.providers.find((p: any) => p.code === 'hulo-adyen');
+        expect(adyen.methods.map((m: any) => m.code)).toContain('hulo-adyen');
+    });
+
     it('unknown providers are refused', async () => {
         expect((await fetch(`${BASE}/hulo-payments/webhook/hulo-nope`, { method: 'POST', body: '{}' })).status).toBe(404);
     });

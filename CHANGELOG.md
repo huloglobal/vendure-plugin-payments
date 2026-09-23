@@ -5,6 +5,12 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-09-23
+
+### Added
+- **Payment methods tab** on the Payments page: every provider for every channel in one table, one status word per cell (Not added / Not set up / Ready, disabled / Test mode / Live). **Add** creates the payment method on that channel — disabled, no keys, with a descriptive name such as "Adyen · cards, wallets & 100+ local methods" — so it is visible under Settings → Payment methods straight away; **Connect** opens the Connect panel for that channel. "Add every missing method" fills the whole table in one click. The button on Settings → Payment methods now opens this tab.
+- `POST /hulo-payments/methods { provider, channelId }` behind it (admin, CreatePaymentMethod), idempotent per provider and channel.
+
 ## [0.2.3] — 2026-09-23
 
 ### Added

@@ -1,6 +1,7 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
 import { BLURBS, MARKS, PAY_WITH, PROVIDER_GROUPS, STATUS_LABEL, methodStatus } from './provider-copy';
+import { HuloProvidersCacheService } from '../providers-cache.service';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService, ModalService, getServerLocation } from '@vendure/admin-ui/core';
 
@@ -9,7 +10,7 @@ import { NotificationService, ModalService, getServerLocation } from '@vendure/a
  *  UI is served from another origin or a CDN. */
 const API = `${getServerLocation().replace(/\/$/, '')}/hulo-payments`;
 
-type Tab = 'overview' | 'transactions' | 'subscriptions' | 'paylink' | 'providers' | 'settings';
+type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink' | 'providers' | 'settings';
 
 const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-adyen': 'Adyen', 'hulo-paypal': 'PayPal', 'hulo-mollie': 'Mollie' };
 
@@ -128,6 +129,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
             <div class="card top-bar"><div class="card-block">
                 <div class="tabs" role="tablist">
                     <button class="tab" role="tab" [class.active]="tab==='overview'" (click)="go('overview')">Overview</button>
+                    <button class="tab" role="tab" [class.active]="tab==='methods'" (click)="go('methods')">Payment methods</button>
                     <button class="tab" role="tab" [class.active]="tab==='transactions'" (click)="go('transactions')">Transactions<span class="tab-count" *ngIf="txns?.totalItems">{{ txns.totalItems }}</span></button>
                     <button class="tab" role="tab" [class.active]="tab==='subscriptions'" (click)="go('subscriptions')">Subscriptions<span class="tab-count" *ngIf="subs?.totalItems">{{ subs.totalItems }}</span></button>
                     <button class="tab" role="tab" [class.active]="tab==='paylink'" (click)="go('paylink')">Pay by link</button>
@@ -277,6 +279,46 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         </vdr-page-block>
 
         <!-- PROVIDERS -->
+        <!-- PAYMENT METHODS: every provider × every channel, one status word each -->
+        <vdr-page-block *ngIf="tab==='methods' && providers">
+            <p class="hint" style="margin:0 0 14px">Every way to pay, for every channel. <strong>Add</strong> creates the payment method (disabled, no keys) so it appears under Settings → Payment methods; <strong>Connect</strong> pastes the keys and switches it on. Customers only ever see methods that are enabled.</p>
+            <div class="pm-matrix-wrap">
+                <table class="table pm-matrix">
+                    <thead><tr><th>Provider</th><th *ngFor="let c of providers.channels">{{ c.code === '__default_channel__' ? 'Default channel' : c.code }}</th></tr></thead>
+                    <tbody>
+                        <ng-container *ngFor="let g of providerGroups">
+                            <tr class="pm-group-row"><td [attr.colspan]="1 + providers.channels.length">{{ g.title }}</td></tr>
+                            <tr *ngFor="let p of groupProviders(g)">
+                                <td class="pm-prov">
+                                    <span class="prov-mark sm" [style.background]="mark(p.code).bg" aria-hidden="true">{{ mark(p.code).text }}</span>
+                                    <span><strong>{{ p.name }}</strong><span class="pill tier" [class.free]="p.freeTier" style="margin-left:6px">{{ p.freeTier ? 'Free' : 'Licensed' }}</span><div class="small muted">{{ payWith(p.code) }}</div></span>
+                                </td>
+                                <td *ngFor="let c of providers.channels" class="pm-cell">
+                                    <ng-container *ngIf="methodOn(p, c.id) as m; else noMethod">
+                                        <a [routerLink]="['/settings', 'payment-methods', m.id]" class="prov-state" [class]="'prov-state ' + methodState(m, p.code).kind" [title]="m.code">{{ methodState(m, p.code).label }}</a>
+                                        <div class="pm-actions">
+                                            <button class="gbtn gbtn-outline gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">{{ methodState(m, p.code).kind === 'not-set-up' ? 'Connect' : 'Update keys' }}</button>
+                                        </div>
+                                    </ng-container>
+                                    <ng-template #noMethod>
+                                        <span class="prov-state none">Not added</span>
+                                        <div class="pm-actions">
+                                            <button class="gbtn gbtn-outline gbtn-xs" (click)="addMethod(p, c.id)" [disabled]="adding === p.code + ':' + c.id">{{ adding === p.code + ':' + c.id ? 'Adding…' : 'Add' }}</button>
+                                            <button class="gbtn gbtn-primary gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">Connect</button>
+                                        </div>
+                                    </ng-template>
+                                </td>
+                            </tr>
+                        </ng-container>
+                    </tbody>
+                </table>
+            </div>
+            <div class="picker" style="margin-top:12px">
+                <button class="gbtn gbtn-outline gbtn-sm" (click)="addAllMissing()" [disabled]="!!adding">{{ adding === 'all' ? 'Adding…' : 'Add every missing method (disabled)' }}</button>
+                <a class="gbtn gbtn-outline gbtn-sm" [routerLink]="['/settings', 'payment-methods']">Open Settings → Payment methods</a>
+            </div>
+        </vdr-page-block>
+
         <vdr-page-block *ngIf="tab==='providers' && providers">
             <p class="hint" style="margin:0 0 14px">Pick what your customers should be able to pay with. One card provider is enough for most shops; add PayPal or a local method next to it if customers ask for it. Every provider works the same way once connected: same ledger, same refunds, same dashboard.</p>
             <div class="prov-group" *ngFor="let g of providerGroups">
@@ -390,6 +432,17 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         </vdr-page-block>
 `,
     styles: [`
+        .pm-matrix-wrap { overflow-x: auto; border: 1px solid var(--color-weight-200, #e2e8f0); border-radius: 10px; background: var(--color-component-bg-100, #fff); }
+        .pm-matrix { width: 100%; border-collapse: collapse; margin: 0; }
+        .pm-matrix th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--color-weight-500, #64748b); padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
+        .pm-matrix td { padding: 10px 14px; vertical-align: top; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
+        .pm-group-row td { background: var(--color-weight-100, #f8fafc); font-weight: 700; font-size: 12.5px; padding: 6px 14px; }
+        .pm-prov { display: flex; gap: 10px; align-items: flex-start; min-width: 260px; }
+        .prov-mark.sm { width: 26px; height: 26px; font-size: 11px; border-radius: 6px; }
+        .pm-cell { min-width: 170px; }
+        .pm-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+        .gbtn-xs { padding: 2px 8px; font-size: 11.5px; }
+        a.prov-state { text-decoration: none; }
         .prov-group { margin-bottom: 18px; }
         .prov-group-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
         .prov-group-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
@@ -702,7 +755,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     linkOrder = ''; linkProvider = ''; linkHours = 72; link: any = null; links: any = null; copied = false;
     connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
 
-    constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef, private route: ActivatedRoute) {}
+    constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef, private route: ActivatedRoute, private cache: HuloProvidersCacheService) {}
 
     /** Request options that authenticate against the API whether the admin UI
      *  uses cookie sessions (same origin) or bearer tokens (any origin). */
@@ -720,7 +773,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         // Deep links from Settings → Payment methods: ?tab=providers&connect=hulo-stripe
         const q = this.route.snapshot.queryParamMap;
         const tab = q.get('tab') as Tab | null;
-        if (tab && ['overview', 'transactions', 'subscriptions', 'paylink', 'providers', 'settings'].includes(tab)) this.tab = tab;
+        if (tab && ['overview', 'methods', 'transactions', 'subscriptions', 'paylink', 'providers', 'settings'].includes(tab)) this.tab = tab;
         this.pendingConnect = q.get('connect') || '';
         this.checkClaim(false); this.reloadAll();
     }
@@ -739,7 +792,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (t === 'transactions') this.loadTxns();
         if (t === 'subscriptions') this.loadSubs();
         if (t === 'paylink') this.loadLinks();
-        if (t === 'providers') this.loadProviders();
+        if (t === 'providers' || t === 'methods') this.loadProviders();
         if (t === 'settings') this.loadSettings();
     }
 
@@ -815,6 +868,29 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         return (ids || []).map(id => { const c = chans.find(x => x.id === id); return c ? (c.code === '__default_channel__' ? 'default' : c.code) : String(id); }).join(', ') || 'all';
     }
     providerGroups = PROVIDER_GROUPS;
+    adding = '';
+    methodOn(p: any, channelId: number): any { return (p.methods || []).find((m: any) => (m.channelIds || []).includes(channelId)) || null; }
+    addMethod(p: any, channelId: number) {
+        this.adding = `${p.code}:${channelId}`;
+        this.http.post<any>(`${API}/methods`, { provider: p.code, channelId }, this.h()).subscribe({
+            next: r => { this.adding = ''; this.notification.success(r?.created ? `${p.name} added to the channel (disabled until you connect it)` : `${p.name} is already on that channel`); this.cache.invalidate(); this.loadProviders(); },
+            error: e => { this.adding = ''; this.notification.error(e?.error?.message || e?.error?.error || 'Could not add the method'); this.cdr.markForCheck(); },
+        });
+    }
+    async addAllMissing() {
+        const chans: any[] = this.providers?.channels || [];
+        const todo: Array<[any, number]> = [];
+        for (const p of this.providers?.providers || []) for (const c of chans) if (!this.methodOn(p, c.id)) todo.push([p, c.id]);
+        if (!todo.length) { this.notification.info('Every provider is already on every channel'); return; }
+        this.adding = 'all'; this.cdr.markForCheck();
+        let n = 0;
+        for (const [p, channelId] of todo) {
+            try { await this.http.post<any>(`${API}/methods`, { provider: p.code, channelId }, this.h()).toPromise(); n++; } catch { /* keep going */ }
+        }
+        this.adding = ''; this.notification.success(`${n} of ${todo.length} methods added (disabled)`); this.cache.invalidate(); this.loadProviders();
+    }
+    connectOn(p: any, channelId: number) { this.tab = 'providers'; this.expanded = p.code; this.connectFor = ''; this.openConnect(p); this.connectChannel = channelId; this.cdr.markForCheck(); }
+
     expanded = '';
     groupProviders(g: { codes: string[] }): any[] {
         const all: any[] = this.providers?.providers || [];
