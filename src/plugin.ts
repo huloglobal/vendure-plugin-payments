@@ -41,7 +41,7 @@ export interface HuloPaymentsPluginOptions {
     publicBaseUrl: string;
     /** JWT licence key from huloglobal.com. Without it the plugin runs in the
      *  FREE tier after the 14-day evaluation: Stripe, the ledger and the
-     *  dashboard stay on; Adyen, PayPal, Mollie, subscriptions, saved cards,
+     *  dashboard stay on; the other eight providers, subscriptions, saved cards,
      *  pay-by-link, routing and surcharges need a licence. */
     licenceKey?: string;
     /** Where disputes and failed renewals are reported. */
@@ -195,7 +195,7 @@ export class HuloPaymentsPlugin {
         if (!status.valid) {
             HuloPaymentsPlugin.startEvaluation();
             // eslint-disable-next-line no-console
-            console.warn(`[${PKG_NAME}] ${status.message} — Running in FREE tier after the 14-day evaluation: Stripe, the ledger and the dashboard stay on; Adyen, PayPal, Mollie, subscriptions, saved cards, pay-by-link, routing and surcharges need a licence. Buy at https://elite.charity/licence/buy/${PLUGIN_ID}`);
+            console.warn(`[${PKG_NAME}] ${status.message} — Running in FREE tier after the 14-day evaluation: Stripe, bank transfer, pay-later, the hosted checkout page, the ledger and the dashboard stay on; the other eight providers, subscriptions, saved cards, pay-by-link, routing and surcharges need a licence. Buy at https://elite.charity/licence/buy/${PLUGIN_ID}`);
         }
         if (!HuloPaymentsPlugin.heartbeat) {
             HuloPaymentsPlugin.heartbeat = new Heartbeat({ packageName: PKG_NAME, packageVersion: PKG_VERSION, licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY) });

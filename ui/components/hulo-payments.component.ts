@@ -23,7 +23,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                 <div class="hulo-hero-logo" aria-hidden="true"><svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#050a10"/><rect x="12" y="20" width="40" height="26" rx="4" fill="#1d4ed8"/><rect x="12" y="26" width="40" height="6" fill="#050a10"/><rect x="17" y="36" width="12" height="4" rx="1" fill="#fff"/><circle cx="46" cy="38" r="3.5" fill="#f59e0b"/></svg></div>
                 <div class="hulo-hero-text">
                     <h1 class="hulo-hero-title">Payments</h1>
-                    <p class="hulo-hero-sub">Stripe, Adyen, PayPal and Mollie behind one contract — sessions, wallets, 3-D Secure, captures, refunds, disputes, saved cards, subscriptions and pay-by-link, all in one ledger.</p>
+                    <p class="hulo-hero-sub">Eleven ways to get paid — Stripe, Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, crypto, bank transfer and pay-later — with one hosted checkout page, one ledger and the same refunds, holds, subscriptions and pay-by-link for every provider.</p>
                 </div>
                 <div class="hulo-hero-actions">
                     <button class="gbtn gbtn-hero" (click)="showHelp = !showHelp">{{ showHelp ? 'Hide guide' : 'Setup guide' }}</button>
@@ -69,7 +69,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                     <ng-container *ngIf="meta.eval?.daysRemaining != null; else evalNoClock">
                         <strong>{{ meta.eval.daysRemaining }} day{{ meta.eval.daysRemaining === 1 ? '' : 's' }} left</strong> with everything enabled — Adyen, PayPal, Mollie, subscriptions, saved cards, pay-by-link, routing and surcharges included.
                     </ng-container>
-                    <ng-template #evalNoClock>everything is enabled — Adyen, PayPal, Mollie, subscriptions, saved cards, pay-by-link, routing and surcharges included.</ng-template>
+                    <ng-template #evalNoClock>everything is enabled — all eleven providers, subscriptions, saved cards, pay-by-link, routing and surcharges included.</ng-template>
                     Afterwards the plugin drops to the free tier.
                 </div>
                 <div class="actions eval-actions">
@@ -81,7 +81,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
             </div>
             <div class="update-banner major" *ngIf="meta.tier !== 'trial'">
                 <div>
-                    <strong>🔓 Free tier</strong> — Stripe (cards, wallets, 3-D Secure, captures, refunds, disputes), the ledger and this dashboard stay active. Adyen, PayPal, Mollie, subscriptions, saved cards, pay-by-link, provider routing and surcharges need a licence.
+                    <strong>🔓 Free tier</strong> — Stripe (cards, wallets, 3-D Secure, captures, refunds, disputes), bank transfer, pay-later, the hosted checkout page, the ledger and this dashboard stay active. The other eight providers, subscriptions, saved cards, pay-by-link, provider routing and surcharges need a licence.
                     Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence.
                 </div>
                 <div class="actions">
