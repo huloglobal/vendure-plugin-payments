@@ -177,6 +177,7 @@ export class PaymentsService {
     async applyEvent(providerCode: string, ev: NormalisedEvent, method: ResolvedMethod & { handlerCode: string }): Promise<void> {
         const provider = getProvider(providerCode);
         if (!provider || ev.type === 'ignored') return;
+        if (ev.foreign) { Logger.verbose(`${providerCode} ${ev.type} for ${ev.orderCode || ev.paymentRef}: not ours, ignored`, loggerCtx); return; }
         if (ev.type.startsWith('subscription.') || (ev.subscription && (ev.type === 'payment.authorized' || ev.type === 'payment.settled'))) {
             await this.subscriptions.applyEvent(providerCode, ev, method.args);
             if (ev.type.startsWith('subscription.')) return;
@@ -212,7 +213,7 @@ export class PaymentsService {
                     if (r?.errorCode) Logger.warn(`settle after webhook failed for ${order.code}: ${r.message}`, loggerCtx);
                     return; // the handler's settle wrote the ledger row
                 }
-                if (!payment && order.state === 'ArrangingPayment') {
+                if (!payment && order.state === 'ArrangingPayment' && !(order.payments || []).some(p => p.method !== method.paymentMethodCode)) {
                     await this.addPaymentFromWebhook(ctx, order, method, ev);
                     return;
                 }

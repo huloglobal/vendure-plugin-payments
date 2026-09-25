@@ -104,6 +104,9 @@ export interface NormalisedEvent {
         | 'subscription.canceled' | 'subscription.paused' | 'subscription.updated'
         | 'paylink.completed' | 'ignored';
     orderCode?: string;
+    /** True when the payment was created by another integration on the same provider account
+     *  (e.g. Vendure's own Stripe plugin): acknowledge and leave the order alone. */
+    foreign?: boolean;
     /** Provider payment reference (PaymentIntent id, pspReference, capture id, Mollie payment id). */
     paymentRef?: string;
     /** Provider subscription reference where relevant. */

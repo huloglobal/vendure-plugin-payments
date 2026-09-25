@@ -290,17 +290,21 @@ export function normaliseStripeEvent(ev: any): NormalisedEvent {
     const base = { id: String(ev?.id || ''), raw: ev };
     const cur = o.currency ? String(o.currency).toUpperCase() : undefined;
     const money = (v: any) => cur && v != null ? fromProviderMinor(Number(v), cur) : undefined;
+    // Our intents are stamped with vendureOrderId; an intent that names an order but was not created by
+    // this plugin belongs to another integration sharing the account (Vendure's StripePlugin, Checkout Guard…).
+    const md = o.metadata || {};
+    const foreign = !md.vendureOrderId && !md.huloPayLink && !!(md.orderCode || md.orderId);
     switch (ev?.type) {
         case 'payment_intent.succeeded':
-            return { ...base, type: 'payment.settled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount_received ?? o.amount), currency: cur };
+            return { ...base, foreign, type: 'payment.settled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount_received ?? o.amount), currency: cur };
         case 'payment_intent.amount_capturable_updated':
-            return { ...base, type: 'payment.authorized', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount_capturable), currency: cur };
+            return { ...base, foreign, type: 'payment.authorized', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount_capturable), currency: cur };
         case 'payment_intent.payment_failed':
-            return { ...base, type: 'payment.failed', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur, reason: o.last_payment_error?.message || o.last_payment_error?.decline_code };
+            return { ...base, foreign, type: 'payment.failed', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur, reason: o.last_payment_error?.message || o.last_payment_error?.decline_code };
         case 'payment_intent.canceled':
-            return { ...base, type: 'payment.canceled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur };
+            return { ...base, foreign, type: 'payment.canceled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur };
         case 'charge.refunded':
-            return { ...base, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(o.amount_refunded), currency: cur };
+            return { ...base, foreign, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(o.amount_refunded), currency: cur };
         case 'charge.refund.updated':
             return { ...base, type: o.status === 'failed' ? 'refund.failed' : 'ignored', paymentRef: o.payment_intent, amount: money(o.amount), currency: cur, reason: o.failure_reason };
         case 'charge.dispute.created':

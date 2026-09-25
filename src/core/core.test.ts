@@ -159,3 +159,14 @@ describe('more providers', () => {
         expect((pl.metadata as any).public.termsDays).toBe(14);
     });
 });
+
+describe('foreign Stripe events', () => {
+    it("marks Vendure StripePlugin intents as foreign and HULO intents as ours", () => {
+        const theirs = normaliseStripeEvent({ id: 'evt_1', type: 'payment_intent.succeeded', data: { object: { id: 'pi_1', currency: 'gbp', amount_received: 1000, metadata: { orderCode: 'ABC', orderId: '5', channelToken: 'x' } } } });
+        const ours = normaliseStripeEvent({ id: 'evt_2', type: 'payment_intent.succeeded', data: { object: { id: 'pi_2', currency: 'gbp', amount_received: 1000, metadata: { orderCode: 'ABC', vendureOrderId: '5' } } } });
+        const anon = normaliseStripeEvent({ id: 'evt_3', type: 'charge.dispute.created', data: { object: { payment_intent: 'pi_9', currency: 'gbp', amount: 500 } } });
+        expect(theirs.foreign).toBe(true);
+        expect(ours.foreign).toBe(false);
+        expect(anon.foreign).toBeUndefined();
+    });
+});

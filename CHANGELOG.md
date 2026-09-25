@@ -5,6 +5,13 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-09-25
+
+### Fixed
+- **Sharing a Stripe account with Vendure's own Stripe plugin no longer produces webhook errors.** Events for PaymentIntents the plugin did not create (they lack its `vendureOrderId` stamp) are acknowledged and ignored instead of being applied to the order; the plugin never adds a payment to an order that already carries another method's payment.
+- A configured but disabled method still answers its webhook endpoint with 200 after verifying the signature, so the provider does not mark the endpoint as failing while the method is switched off.
+- Enabling, disabling or editing a payment method in Settings takes effect immediately (the plugin's method cache is cleared on the Vendure event) instead of after up to 30 seconds.
+
 ## [0.2.4] — 2026-09-23
 
 ### Added

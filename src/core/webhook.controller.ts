@@ -35,8 +35,21 @@ export class WebhookController {
         const provider = getProvider(providerCode);
         if (!provider) return res.status(404).json({ error: 'unknown provider' });
         const raw: Buffer | string = Buffer.isBuffer(req.body) ? req.body : typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});
-        const methods = (await listHuloMethods(this.connection)).filter(m => m.handlerCode === providerCode && m.enabled);
-        if (!methods.length) return res.status(404).json({ error: `no enabled ${providerCode} payment method` });
+        const all = (await listHuloMethods(this.connection)).filter(m => m.handlerCode === providerCode);
+        if (!all.length) return res.status(404).json({ error: `no ${providerCode} payment method` });
+        // A configured-but-disabled method still owns its webhook endpoint: acknowledge what the provider
+        // sends (after verifying it) instead of failing, otherwise the provider marks the endpoint as broken
+        // and switches it off, and the admin sees "webhook error" the moment they enable the method.
+        const methods = all.filter(m => m.enabled);
+        if (!methods.length) {
+            for (const m of all) {
+                try {
+                    const v = await provider.verifyWebhook(m.args, raw, req.headers as any, (req.query || {}) as any);
+                    if (v.ok) return res.status(200).json({ received: true, ignored: true, reason: 'payment method disabled' });
+                } catch { /* try the next method's secret */ }
+            }
+            return res.status(400).json({ error: 'verification failed (payment method disabled)' });
+        }
         let lastError = '';
         for (const m of methods) {
             let v;

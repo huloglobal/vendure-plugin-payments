@@ -1,4 +1,5 @@
-import { PluginCommonModule, RuntimeVendureConfig, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
+import { clearCredentialCache } from './core/credentials';
+import { EventBus, PaymentMethodEvent, PluginCommonModule, RuntimeVendureConfig, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
 import {
     fingerprintPublicKey, Heartbeat, LicenceStatus, RevocationChecker, UpdateChecker, verifyLicence,
     warnIfIncompatibleVendure, EvaluationClient, EvaluationState, LicenceStore, adapterFor,
@@ -157,9 +158,11 @@ export class HuloPaymentsPlugin {
         HuloPaymentsPlugin.evalClientInternal?.start();
     }
 
-    constructor(private connection: TransactionalConnection) {}
+    constructor(private connection: TransactionalConnection, private eventBus: EventBus) {}
 
     async onApplicationBootstrap() {
+        // Enabling or editing a payment method in Settings must take effect at once (webhooks, providers tab).
+        this.eventBus.ofType(PaymentMethodEvent).subscribe(() => clearCredentialCache());
         if (HuloPaymentsPlugin.licenceStatus?.valid) return;
         try {
             const store = new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
