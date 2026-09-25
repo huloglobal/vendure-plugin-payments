@@ -294,19 +294,21 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                                     <span><strong>{{ p.name }}</strong><span class="pill tier" [class.free]="p.freeTier" style="margin-left:6px">{{ p.freeTier ? 'Free' : 'Licensed' }}</span><div class="small muted">{{ payWith(p.code) }}</div></span>
                                 </td>
                                 <td *ngFor="let c of providers.channels" class="pm-cell">
-                                    <ng-container *ngIf="methodOn(p, c.id) as m; else noMethod">
-                                        <a [routerLink]="['/settings', 'payment-methods', m.id]" class="prov-state" [class]="'prov-state ' + methodState(m, p.code).kind" [title]="m.code">{{ methodState(m, p.code).label }}</a>
-                                        <div class="pm-actions">
-                                            <button class="gbtn gbtn-outline gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">{{ methodState(m, p.code).kind === 'not-set-up' ? 'Connect' : 'Update keys' }}</button>
-                                        </div>
-                                    </ng-container>
-                                    <ng-template #noMethod>
-                                        <span class="prov-state none">Not added</span>
-                                        <div class="pm-actions">
-                                            <button class="gbtn gbtn-outline gbtn-xs" (click)="addMethod(p, c.id)" [disabled]="adding === p.code + ':' + c.id">{{ adding === p.code + ':' + c.id ? 'Adding…' : 'Add' }}</button>
-                                            <button class="gbtn gbtn-primary gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">Connect</button>
-                                        </div>
-                                    </ng-template>
+                                    <div class="pm-stack">
+                                        <ng-container *ngIf="methodOn(p, c.id) as m; else noMethod">
+                                            <a [routerLink]="['/settings', 'payment-methods', m.id]" class="prov-state" [class]="'prov-state ' + methodState(m, p.code).kind" [title]="m.code">{{ methodState(m, p.code).label }}</a>
+                                            <div class="pm-actions">
+                                                <button class="gbtn gbtn-outline gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">{{ methodState(m, p.code).kind === 'not-set-up' ? 'Connect' : 'Update keys' }}</button>
+                                            </div>
+                                        </ng-container>
+                                        <ng-template #noMethod>
+                                            <span class="prov-state none">Not added</span>
+                                            <div class="pm-actions">
+                                                <button class="gbtn gbtn-outline gbtn-xs" (click)="addMethod(p, c.id)" [disabled]="adding === p.code + ':' + c.id">{{ adding === p.code + ':' + c.id ? 'Adding…' : 'Add' }}</button>
+                                                <button class="gbtn gbtn-primary gbtn-xs" (click)="connectOn(p, c.id)" [disabled]="!p.freeTier && !dash?.premium">Connect</button>
+                                            </div>
+                                        </ng-template>
+                                    </div>
                                 </td>
                             </tr>
                         </ng-container>
@@ -433,15 +435,17 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
 `,
     styles: [`
         .pm-matrix-wrap { overflow-x: auto; border: 1px solid var(--color-weight-200, #e2e8f0); border-radius: 10px; background: var(--color-component-bg-100, #fff); }
-        .pm-matrix { width: 100%; border-collapse: collapse; margin: 0; }
-        .pm-matrix th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--color-weight-500, #64748b); padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
-        .pm-matrix td { padding: 10px 14px; vertical-align: top; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
+        .pm-matrix { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0; }
+        .pm-matrix th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--color-weight-500, #64748b); padding: 10px 14px; text-align: left !important; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
+        .pm-matrix th:first-child { width: 46%; }
+        .pm-matrix td { padding: 10px 14px; vertical-align: middle; text-align: left !important; border-bottom: 1px solid var(--color-weight-200, #e2e8f0); }
+        .pm-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
         .pm-group-row td { background: var(--color-weight-100, #f8fafc); font-weight: 700; font-size: 12.5px; padding: 6px 14px; }
         .pm-prov { display: flex; gap: 10px; align-items: flex-start; min-width: 260px; }
         .prov-mark.sm { width: 26px; height: 26px; font-size: 11px; border-radius: 6px; }
         .pm-cell { min-width: 190px; }
         .pm-cell .prov-state { display: inline-block; min-width: 112px; text-align: center; }
-        .pm-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+        .pm-actions { display: flex; gap: 6px; flex-wrap: wrap; }
         .pm-actions .gbtn-xs { min-width: 96px; justify-content: center; }
         .gbtn-xs { padding: 2px 8px; font-size: 11.5px; }
         a.prov-state { text-decoration: none; }

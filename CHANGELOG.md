@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] — 2026-09-25
+
+### Fixed
+- Payments → Payment methods tab: every channel cell stacks its status chip and buttons left-aligned with the same widths, columns are fixed-width and rows vertically centred, so nothing drifts out of line on multi-channel installs.
+
 ## [0.2.6] — 2026-09-25
 
 ### Fixed
