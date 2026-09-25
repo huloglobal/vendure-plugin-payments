@@ -439,8 +439,10 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         .pm-group-row td { background: var(--color-weight-100, #f8fafc); font-weight: 700; font-size: 12.5px; padding: 6px 14px; }
         .pm-prov { display: flex; gap: 10px; align-items: flex-start; min-width: 260px; }
         .prov-mark.sm { width: 26px; height: 26px; font-size: 11px; border-radius: 6px; }
-        .pm-cell { min-width: 170px; }
+        .pm-cell { min-width: 190px; }
+        .pm-cell .prov-state { display: inline-block; min-width: 112px; text-align: center; }
         .pm-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+        .pm-actions .gbtn-xs { min-width: 96px; justify-content: center; }
         .gbtn-xs { padding: 2px 8px; font-size: 11.5px; }
         a.prov-state { text-decoration: none; }
         .prov-group { margin-bottom: 18px; }
@@ -455,7 +457,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
         .prov-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
         .prov-pay { font-size: 12.5px; color: var(--color-weight-500, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .pill.tier { font-size: 10.5px; background: #fef3c7; color: #92400e; } .pill.tier.free { background: #dcfce7; color: #166534; }
-        .prov-state { flex: none; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+        .prov-state { flex: none; min-width: 112px; text-align: center; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
         .prov-state.live { background: #dcfce7; color: #166534; } .prov-state.test { background: #fef3c7; color: #92400e; }
         .prov-state.disabled { background: #e2e8f0; color: #334155; } .prov-state.not-set-up { background: #f1f5f9; color: #64748b; border: 1px dashed #cbd5e1; }
         .prov-state.none { background: transparent; color: #94a3b8; border: 1px dashed #cbd5e1; }

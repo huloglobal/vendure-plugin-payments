@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] — 2026-09-25
+
+### Fixed
+- Settings → Payment methods: the status chips sit in their own fixed column (mark · status · name), so they line up down the page whatever the method name length; the Payment methods tab's status chips and buttons share fixed widths for the same reason.
+
 ## [0.2.5] — 2026-09-25
 
 ### Fixed

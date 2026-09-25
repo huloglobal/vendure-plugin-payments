@@ -1,6 +1,6 @@
 {
     "name": "@huloglobal/vendure-plugin-payments",
-    "version": "0.2.5",
+    "version": "0.2.6",
     "description": "One payments plugin for Vendure: Stripe, Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, Coinbase Commerce, bank transfer and pay-later behind a single contract \u2014 a hosted checkout page, wallets, 3-D Secure, captures, refunds, disputes, saved cards, subscriptions, pay-by-link, routing rules and a payments ledger with a dashboard.",
     "license": "AGPL-3.0-or-later",
     "author": "Wayne Garrison <wayne@garrison.me.uk>",
