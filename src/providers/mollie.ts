@@ -110,7 +110,7 @@ export const mollieProvider: PaymentProvider = {
     },
 
     async refund(args, paymentRef, amount, currency, reason) {
-        const r = await mollie(args, `/payments/${paymentRef}/refunds`, { json: { amount: { currency, value: toDecimalString(amount, currency) }, description: reason ? String(reason).slice(0, 140) : undefined }, idempotencyKey: idem('hulo-mol-ref', paymentRef, amount, Date.now().toString(36).slice(0, 6)) });
+        const r = await mollie(args, `/payments/${paymentRef}/refunds`, { json: { amount: { currency, value: toDecimalString(amount, currency) }, description: reason ? String(reason).slice(0, 140) : undefined }, idempotencyKey: idem('hulo-mol-ref', paymentRef, amount, Math.floor(Date.now() / 60_000).toString(36)) });
         return { state: r.status === 'refunded' ? 'Settled' : r.status === 'failed' ? 'Failed' : 'Pending', transactionId: r.id, metadata: { refundId: r.id, status: r.status } };
     },
 

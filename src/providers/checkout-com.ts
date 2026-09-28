@@ -72,7 +72,7 @@ export const checkoutComProvider: PaymentProvider = {
     async capture(args, paymentRef, amount, currency) { try { await cko(args, `/payments/${paymentRef}/captures`, { json: { amount: toProviderMinor(amount, currency) }, idempotencyKey: idem('hulo-cko-cap', paymentRef, amount) }); return { success: true }; } catch (e: any) { return { success: false, errorMessage: e.message }; } },
     async cancel(args, paymentRef) { try { await cko(args, `/payments/${paymentRef}/voids`, { json: {} }); return { success: true }; } catch (e: any) { return { success: false, errorMessage: e.message }; } },
     async refund(args, paymentRef, amount, currency, reason) {
-        const r = await cko(args, `/payments/${paymentRef}/refunds`, { json: { amount: toProviderMinor(amount, currency), reference: reason ? String(reason).slice(0, 50) : undefined }, idempotencyKey: idem('hulo-cko-ref', paymentRef, amount, Date.now().toString(36).slice(0, 6)) });
+        const r = await cko(args, `/payments/${paymentRef}/refunds`, { json: { amount: toProviderMinor(amount, currency), reference: reason ? String(reason).slice(0, 50) : undefined }, idempotencyKey: idem('hulo-cko-ref', paymentRef, amount, Math.floor(Date.now() / 60_000).toString(36)) });
         return { state: 'Pending', transactionId: r.action_id, metadata: { actionId: r.action_id } };
     },
     async verifyWebhook(args, rawBody, headers): Promise<WebhookVerification> {

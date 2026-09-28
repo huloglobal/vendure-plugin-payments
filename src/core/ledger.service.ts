@@ -67,7 +67,33 @@ export class LedgerService implements OnModuleInit {
     constructor(private connection: TransactionalConnection) {}
     private get db() { return adapterFor(this.connection.rawConnection); }
 
-    async onModuleInit() { await this.ensureSchema(); }
+    async onModuleInit() {
+        await this.ensureSchema();
+        // Retention for the webhook idempotency log: 180 days is far beyond any provider's redelivery window.
+        const purge = () => this.db.query(`DELETE FROM hulo_payment_event WHERE receivedAt < DATE_SUB(NOW(), INTERVAL 180 DAY)`).catch(() => undefined);
+        void purge();
+        const t = setInterval(purge, 12 * 3600_000);
+        if (typeof t.unref === 'function') t.unref();
+    }
+
+    /** `ALTER TABLE … ADD COLUMN IF NOT EXISTS` is MariaDB/Postgres syntax; MySQL 8 needs the check up front. */
+    private async addColumnIfMissing(table: string, column: string, ddl: string): Promise<void> {
+        const scope = this.db.dialect === 'postgres' ? 'table_catalog = current_database() AND table_schema = current_schema()' : 'table_schema = DATABASE()';
+        const rows: any[] = await this.db.query(
+            `SELECT COUNT(*) AS n FROM information_schema.columns WHERE ${scope} AND LOWER(table_name) = LOWER(?) AND LOWER(column_name) = LOWER(?)`, [table, column],
+        ).catch(() => []);
+        if (Number(rows?.[0]?.n ?? rows?.[0]?.N ?? 0) > 0) return;
+        try { await this.db.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`); }
+        catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+    }
+
+    /** A pay-by-link was issued for this order and nothing has completed it yet. */
+    async hasPendingPayLink(orderCode: string): Promise<boolean> {
+        const rows: any[] = await this.db.query(
+            `SELECT id FROM hulo_payment_txn WHERE kind = 'paylink' AND status = 'pending' AND orderCode = ? ORDER BY id DESC LIMIT 1`, [orderCode],
+        ).catch(() => []);
+        return !!rows?.length;
+    }
 
     async ensureSchema(): Promise<void> {
         await this.db.query(`
@@ -123,9 +149,20 @@ export class LedgerService implements OnModuleInit {
                 dunningDays INT NOT NULL DEFAULT 7,
                 updatedAt DATETIME NOT NULL
             )`);
-        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedBrandName VARCHAR(120) NOT NULL DEFAULT ''`);
-        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedAccent VARCHAR(16) NOT NULL DEFAULT '#1d4ed8'`);
-        await this.db.query(`ALTER TABLE hulo_payment_settings ADD COLUMN IF NOT EXISTS hostedLogoUrl VARCHAR(500) NOT NULL DEFAULT ''`);
+        await this.addColumnIfMissing('hulo_payment_settings', 'hostedBrandName', `VARCHAR(120) NOT NULL DEFAULT ''`);
+        await this.addColumnIfMissing('hulo_payment_settings', 'hostedAccent', `VARCHAR(16) NOT NULL DEFAULT '#1d4ed8'`);
+        await this.addColumnIfMissing('hulo_payment_settings', 'hostedLogoUrl', `VARCHAR(500) NOT NULL DEFAULT ''`);
+        // 0.2.8: the admin list and dashboard filter by channel; Vendure never indexes payment.transactionId (webhook lookups).
+        for (const ddl of [
+            'CREATE INDEX IF NOT EXISTS idx_hpt_channel ON hulo_payment_txn (channelId, id)',
+            'CREATE INDEX IF NOT EXISTS idx_hulo_payment_txref ON payment (`transactionId`)',
+        ]) { try { await this.db.query(ddl); } catch { /* optional */ } }
+    }
+
+    /** Undo a claim so the provider's redelivery can be processed (the error is kept for the events list until then). */
+    async releaseEvent(provider: string, eventId: string, error?: string): Promise<void> {
+        await this.db.query(`DELETE FROM hulo_payment_event WHERE provider = ? AND eventId = ?`, [provider, String(eventId).slice(0, 190)]).catch(() => undefined);
+        if (error) Logger.warn(`${provider} event ${eventId} released after error: ${String(error).slice(0, 200)}`, loggerCtx);
     }
 
     // ── Transactions ────────────────────────────────────────────────────

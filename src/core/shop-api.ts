@@ -5,6 +5,23 @@ import { PaymentsService } from './payments.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 import { PremiumRequiredError, getRuntime } from './runtime';
 import { HostedCheckoutService } from './hosted.service';
+import { getOptions } from '../plugin';
+
+/**
+ * An absolute http(s) URL the hosted page may send the customer back to.
+ * When the host lists `hostedReturnHosts`, only those hosts are accepted;
+ * otherwise any http(s) origin is (the storefront's own choice).
+ */
+function hostedUrl(raw: string | undefined | null): string | null {
+    const v = String(raw || '').trim();
+    if (!v || v.length > 1000) return null;
+    let u: URL;
+    try { u = new URL(v); } catch { return null; }
+    if (!/^https?:$/.test(u.protocol) || !u.host) return null;
+    const allowed = (getOptions().hostedReturnHosts || []).map(h => String(h).toLowerCase());
+    if (allowed.length && !allowed.includes(u.host.toLowerCase())) return null;
+    return u.toString();
+}
 
 export const shopApiExtensions = gql`
     type HuloPaymentProviderInfo {
@@ -152,8 +169,14 @@ export class HuloPaymentsShopResolver {
     @Allow(Permission.Public)
     async huloHostedCheckout(@Ctx() ctx: RequestContext, @Args() args: { returnUrl: string; cancelUrl?: string; locale?: string; methodCode?: string }) {
         const order = await this.payments.activeOrderOrThrow(ctx);
-        if (!/^https?:\/\//.test(args.returnUrl || '')) throw new UserInputError('returnUrl must be an absolute http(s) URL');
-        const s = await this.hosted.create(order.id, order.code, ctx.channelId as number, args.returnUrl, args.cancelUrl || args.returnUrl, args.locale || ctx.languageCode || 'en-GB', args.methodCode);
+        const returnUrl = hostedUrl(args.returnUrl);
+        if (!returnUrl) throw new UserInputError('returnUrl must be an absolute http(s) URL');
+        const cancelUrl = args.cancelUrl ? hostedUrl(args.cancelUrl) : returnUrl;
+        if (!cancelUrl) throw new UserInputError('cancelUrl must be an absolute http(s) URL');
+        const methodCode = args.methodCode ? String(args.methodCode) : undefined;
+        if (methodCode && !/^[A-Za-z0-9_-]{1,64}$/.test(methodCode)) throw new UserInputError('methodCode is not valid');
+        const locale = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/.test(args.locale || '') ? args.locale! : (ctx.languageCode || 'en-GB');
+        const s = await this.hosted.create(order.id, order.code, ctx.channelId as number, returnUrl, cancelUrl, locale, methodCode);
         return { url: `${getRuntime().publicBaseUrl().replace(/\/$/, '')}/hulo-payments/pay/${s.token}`, expiresAt: new Date(s.expiresAt) };
     }
 

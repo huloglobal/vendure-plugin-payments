@@ -151,7 +151,7 @@ export const stripeProvider: PaymentProvider = {
         const stripeReason = ['duplicate', 'fraudulent', 'requested_by_customer'].includes(reason) ? reason : undefined;
         const r = await stripe(args, '/refunds', {
             form: { payment_intent: paymentRef, amount: toProviderMinor(amount, currency), reason: stripeReason, metadata: { note: reason || '' } },
-            idempotencyKey: idem('hulo-ref', paymentRef, amount, reason, Date.now().toString(36).slice(0, 6)),
+            idempotencyKey: idem('hulo-ref', paymentRef, amount, reason, Math.floor(Date.now() / 60_000).toString(36)),
         });
         return { state: r.status === 'succeeded' ? 'Settled' : r.status === 'failed' ? 'Failed' : 'Pending', transactionId: r.id, metadata: { refundId: r.id, status: r.status } };
     },
@@ -267,7 +267,9 @@ export const stripeProvider: PaymentProvider = {
     },
 
     async createPayLink(args, input: PayLinkInput): Promise<PayLinkOutcome> {
-        const lines = (input.lines && input.lines.length ? input.lines : [{ name: input.description, quantity: 1, amount: input.amount }]);
+        // One line for the order total: the PaymentIntent must equal order.totalWithTax
+        // (shipping, surcharges, tax rounding) or the webhook's amount check refuses it.
+        const lines = [{ name: input.description || `Order ${input.orderCode}`, quantity: 1, amount: input.amount }];
         const session = await stripe(args, '/checkout/sessions', {
             form: {
                 mode: 'payment',

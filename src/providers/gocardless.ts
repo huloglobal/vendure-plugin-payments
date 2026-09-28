@@ -69,7 +69,10 @@ export const gocardlessProvider: PaymentProvider = {
     async capture() { return { success: false, errorMessage: 'GoCardless payments settle by webhook when the bank confirms them' }; },
     async cancel(args, paymentRef) { try { await gc(args, `/payments/${paymentRef}/actions/cancel`, { json: {} }); return { success: true }; } catch (e: any) { return { success: false, errorMessage: e.message }; } },
     async refund(args, paymentRef, amount, currency, reason) {
-        const r = await gc(args, '/refunds', { json: { refunds: { amount: toProviderMinor(amount, currency), total_amount_confirmation: undefined, reference: String(reason || 'refund').slice(0, 18), links: { payment: paymentRef } } }, idempotencyKey: idem('hulo-gc-ref', paymentRef, amount, Date.now().toString(36).slice(0, 6)) });
+        // GoCardless requires total_amount_confirmation = amount already refunded + this refund.
+        let refundedSoFar = 0;
+        try { const p = await gc(args, `/payments/${encodeURIComponent(paymentRef)}`); refundedSoFar = Number(p.payments?.amount_refunded || 0); } catch { /* confirm with this refund only */ }
+        const r = await gc(args, '/refunds', { json: { refunds: { amount: toProviderMinor(amount, currency), total_amount_confirmation: refundedSoFar + toProviderMinor(amount, currency), reference: String(reason || 'refund').replace(/[^A-Za-z0-9 _-]/g, '').slice(0, 18) || 'refund', links: { payment: paymentRef } } }, idempotencyKey: idem('hulo-gc-ref', paymentRef, amount, Math.floor(Date.now() / 60_000).toString(36)) });
         return { state: 'Pending', transactionId: r.refunds?.id, metadata: { status: r.refunds?.status } };
     },
     async verifyWebhook(args, rawBody, headers): Promise<WebhookVerification> {

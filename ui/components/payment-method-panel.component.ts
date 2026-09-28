@@ -127,6 +127,7 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
     blurb = ''; payChips: string[] = []; featureChips: string[] = []; webhookHint = '';
     testing = false; testResult: { ok: boolean; message: string } | null = null; copied = false;
     private meta: any = null; private subs: Subscription[] = [];
+    private entityId = '';
 
     constructor(private http: HttpClient, private cdr: ChangeDetectorRef, private cache: HuloProvidersCacheService) {}
 
@@ -134,7 +135,7 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
         this.subs.push(this.cache.providers().subscribe(m => { if (m) { this.meta = m; this.refresh(); } }));
         const handler = this.detailForm?.get('handler');
         if (handler) this.subs.push(handler.valueChanges.subscribe(() => this.refresh()));
-        if (this.entity$) this.subs.push(this.entity$.subscribe(() => this.refresh()));
+        if (this.entity$) this.subs.push(this.entity$.subscribe((e: any) => { const id = String(e?.id || ''); if (id && id !== this.entityId) { this.entityId = id; this.cache.invalidate(); this.meta = null; this.subs.push(this.cache.providers().subscribe(m => { if (m) { this.meta = m; this.refresh(); } })); } else this.refresh(); }));
     }
     ngOnDestroy() { this.subs.forEach(s => s.unsubscribe()); }
 
@@ -146,15 +147,15 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
         if (!p) { this.provider = null; this.cdr.markForCheck(); return; }
         if (this.provider?.code !== code) this.testResult = null;
         this.provider = p;
-        const entityId = String((this.detailForm?.value?.id) || '');
-        this.methodInfo = p.methods?.find((m: any) => String(m.id) === entityId) || p.methods?.[0] || null;
+        const entityId = this.entityId || String((this.detailForm?.value?.id) || '');
+        this.methodInfo = p.methods?.find((m: any) => String(m.id) === entityId) || (entityId ? null : p.methods?.[0] || null);
         this.blurb = BLURBS[code] || `Payments through ${p.name}, recorded in the HULO Payments ledger with the same refunds, holds and dashboard as every other provider.`;
         this.payChips = PAY_WITH[code] || [];
         const cap = p.capabilities || {};
         this.featureChips = [
             cap.manualCapture ? 'Holds (authorise now, capture later)' : '',
             cap.refunds ? (cap.partialRefunds ? 'Refunds, incl. partial' : 'Refunds') : 'No refunds through Vendure',
-            cap.subscriptions ? 'Subscriptions' : '', cap.savedCards ? 'Saved cards' : '', cap.payLinks ? 'Pay-by-link' : '',
+            cap.subscriptions ? 'Subscriptions' : '', cap.savedCards ? 'Saved cards' : '', cap.payByLink ? 'Pay-by-link' : '',
             cap.disputes ? 'Disputes' : '', cap.offline ? 'Settled by hand from the order page' : 'Confirmed by webhook',
         ].filter(Boolean);
         this.webhookHint = WEBHOOK_HINTS[code] || `Add this URL as a webhook endpoint in the ${p.name} dashboard and paste the secret it gives you into the field above.`;

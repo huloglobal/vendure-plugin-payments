@@ -37,9 +37,15 @@ export interface SubscriptionRow {
     updatedAt: string;
 }
 
-function intervalMs(interval: string, count: number): number {
-    const unit: Record<string, number> = { day: 1, week: 7, month: 30, year: 365 };
-    return (unit[interval] || 30) * Math.max(1, count) * 86400_000;
+/** The next period end by calendar arithmetic: a monthly plan bills on the same day each month, not every 30 days. */
+export function addInterval(from: Date, interval: string, count: number): Date {
+    const n = Math.max(1, Math.floor(Number(count) || 1));
+    const d = new Date(from.getTime());
+    if (interval === 'month') d.setUTCMonth(d.getUTCMonth() + n);
+    else if (interval === 'year') d.setUTCFullYear(d.getUTCFullYear() + n);
+    else if (interval === 'week') d.setUTCDate(d.getUTCDate() + 7 * n);
+    else d.setUTCDate(d.getUTCDate() + n);
+    return d;
 }
 
 /**
@@ -91,8 +97,10 @@ export class SubscriptionService implements OnModuleInit {
                 INDEX idx_hs_customer (customerId),
                 INDEX idx_hs_ref (providerSubscriptionRef),
                 INDEX idx_hs_status (status, nextChargeAt),
+                INDEX idx_hs_period_end (cancelAtPeriodEnd, currentPeriodEnd),
                 INDEX idx_hs_order (orderCode)
             )`);
+        for (const ddl of ['CREATE UNIQUE INDEX IF NOT EXISTS uq_hs_order_variant ON hulo_subscription (orderCode, variantId)']) { try { await this.db.query(ddl); } catch { /* duplicates from before 0.2.8 */ } }
         await this.db.query(`
             CREATE TABLE IF NOT EXISTS hulo_subscription_plan (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -138,8 +146,18 @@ export class SubscriptionService implements OnModuleInit {
             const plan = this.planForLine(line);
             if (!plan) continue;
             plan.currency = order.currencyCode;
-            const [existing] = await this.db.query(`SELECT id FROM hulo_subscription WHERE orderCode = ? AND variantId = ?`, [order.code, plan.variantId]).catch(() => []);
-            if (existing) continue;
+            // Claim (orderCode, variantId) with a pending row BEFORE calling the provider:
+            // the bus fires for PaymentAuthorized and PaymentSettled seconds apart.
+            const claim = await this.db.query(
+                `INSERT IGNORE INTO hulo_subscription (provider, providerSubscriptionRef, channelId, customerId, customerEmail, orderId, orderCode, variantId, variantName, quantity, amount, currency, \`interval\`, intervalCount, status, cancelAtPeriodEnd, selfScheduled, failures, createdAt, updatedAt)
+                 VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, 0, NOW(), NOW())`,
+                [provider.code, channelId, order.customer?.id || null, order.customer?.emailAddress || '', order.id, order.code,
+                 plan.variantId, plan.name.slice(0, 255), plan.quantity, plan.amount, plan.currency, plan.interval, plan.intervalCount],
+                { needAffected: true },
+            ).catch(() => null);
+            if (!Number(claim?.affectedRows ?? claim?.rowCount ?? 0)) continue;
+            const [pendingRow] = await this.db.query(`SELECT id FROM hulo_subscription WHERE orderCode = ? AND variantId = ? ORDER BY id DESC LIMIT 1`, [order.code, plan.variantId]);
+            const rowId = Number(pendingRow?.id);
             try {
                 const planRef = await this.ensurePlanRef(provider.code, method.args, plan);
                 const meta: any = payment.metadata || {};
@@ -151,16 +169,16 @@ export class SubscriptionService implements OnModuleInit {
                     initialPaymentRef: payment.transactionId, providerPlanRef: planRef || undefined,
                     returnUrl: `${getRuntime().publicBaseUrl()}/account/subscriptions`,
                 });
-                const next = outcome.currentPeriodEnd || new Date(Date.now() + intervalMs(plan.interval, plan.intervalCount)).toISOString();
-                await this.db.query(
-                    `INSERT INTO hulo_subscription (provider, providerSubscriptionRef, channelId, customerId, customerEmail, orderId, orderCode, variantId, variantName, quantity, amount, currency, \`interval\`, intervalCount, status, currentPeriodEnd, nextChargeAt, cancelAtPeriodEnd, providerCustomerRef, providerPaymentRef, approveUrl, selfScheduled, failures, createdAt, updatedAt)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 0, NOW(), NOW())`,
-                    [provider.code, outcome.providerSubscriptionRef, channelId, order.customer?.id || null, order.customer?.emailAddress || '', order.id, order.code,
-                     plan.variantId, plan.name.slice(0, 255), plan.quantity, plan.amount, plan.currency, plan.interval, plan.intervalCount, outcome.status,
-                     this.sqlDate(next), outcome.selfScheduled ? this.sqlDate(next) : null,
-                     outcome.providerCustomerRef || null, outcome.providerPaymentRef || null, outcome.approveUrl || null, outcome.selfScheduled ? 1 : 0]);
+                const next = outcome.currentPeriodEnd || addInterval(new Date(), plan.interval, plan.intervalCount).toISOString();
+                await this.update(rowId, {
+                    providerSubscriptionRef: outcome.providerSubscriptionRef, status: outcome.status,
+                    currentPeriodEnd: this.sqlDate(next), nextChargeAt: outcome.selfScheduled ? this.sqlDate(next) : null,
+                    providerCustomerRef: outcome.providerCustomerRef || null, providerPaymentRef: outcome.providerPaymentRef || null,
+                    approveUrl: outcome.approveUrl || null, selfScheduled: outcome.selfScheduled ? 1 : 0,
+                });
                 Logger.info(`Subscription ${outcome.providerSubscriptionRef} (${outcome.status}) for ${order.code} × ${plan.name}`, loggerCtx);
             } catch (e: any) {
+                await this.db.query(`DELETE FROM hulo_subscription WHERE id = ? AND status = 'pending'`, [rowId]).catch(() => undefined);
                 Logger.error(`subscription creation failed for ${order.code} / variant ${plan.variantId}: ${e.message}`, loggerCtx);
                 await getRuntime().notifyOps({ kind: 'payments.subscription.failed', subject: `Subscription could not be created for order ${order.code}`, text: `${plan.name} × ${plan.quantity}: ${e.message}`, orderCode: order.code, channelId });
             }
@@ -227,7 +245,10 @@ export class SubscriptionService implements OnModuleInit {
     private async update(id: number, fields: Record<string, any>): Promise<void> {
         const keys = Object.keys(fields);
         if (!keys.length) return;
-        await this.db.query(`UPDATE hulo_subscription SET ${keys.map(k => `\`${k}\` = ?`).join(', ')}, updatedAt = NOW() WHERE id = ?`, [...keys.map(k => fields[k]), id]);
+        // Only the reserved word is quoted: the table was created with unquoted (lower-cased on Postgres) identifiers.
+        const col = (k: string) => k === 'interval' ? '`interval`' : k;
+        for (const k of keys) if (!/^[A-Za-z][A-Za-z0-9_]{0,40}$/.test(k)) throw new Error(`bad column ${k}`);
+        await this.db.query(`UPDATE hulo_subscription SET ${keys.map(k => `${col(k)} = ?`).join(', ')}, updatedAt = NOW() WHERE id = ?`, [...keys.map(k => fields[k]), id]);
     }
 
     private sqlDate(iso: string | Date | null | undefined): string | null {
@@ -298,7 +319,7 @@ export class SubscriptionService implements OnModuleInit {
                 await this.update(sub.id, { status: 'active', ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}), failures: 0, approveUrl: null });
                 return;
             case 'subscription.renewed':
-                await this.update(sub.id, { status: 'active', failures: 0, currentPeriodEnd: periodEnd || this.sqlDate(new Date(Date.now() + intervalMs(sub.interval, sub.intervalCount))) });
+                await this.update(sub.id, { status: 'active', failures: 0, currentPeriodEnd: periodEnd || this.sqlDate(addInterval(new Date(), sub.interval, sub.intervalCount)) });
                 await this.ledger.record({ channelId: sub.channelId, provider: providerCode, kind: 'renewal', status: 'ok', orderId: sub.orderId, orderCode: sub.orderCode, paymentRef: ev.paymentRef || ev.subscriptionRef, amount: ev.amount ?? sub.amount * sub.quantity, currency: ev.currency || sub.currency, meta: { subscriptionId: sub.id, eventId: ev.id } });
                 return;
             case 'subscription.payment_failed':
@@ -349,11 +370,20 @@ export class SubscriptionService implements OnModuleInit {
             const provider = getProvider(sub.provider);
             const method = await resolveMethod(this.connection, sub.provider, sub.channelId || undefined);
             if (!provider?.chargeStored || !method || !sub.providerPaymentRef || !sub.providerCustomerRef) { await this.update(sub.id, { status: 'past_due', failures: sub.failures + 1, nextChargeAt: this.sqlDate(new Date(Date.now() + 86400_000)) }); out.failed++; continue; }
+            // Claim the row before charging: the hourly cron (worker) and the admin
+            // "run now" (server) can both see it due; only one may charge it.
+            const claimed = await this.db.query(
+                `UPDATE hulo_subscription SET nextChargeAt = DATE_ADD(NOW(), INTERVAL 1 HOUR), updatedAt = NOW()
+                  WHERE id = ? AND selfScheduled = 1 AND status IN ('active','past_due') AND nextChargeAt IS NOT NULL AND nextChargeAt <= NOW()`,
+                [sub.id], { needAffected: true },
+            ).catch(() => null);
+            if (!Number(claimed?.affectedRows ?? claimed?.rowCount ?? 0)) continue;
             const periodStart = new Date(sub.currentPeriodEnd || Date.now());
-            const reference = `${sub.orderCode}-R${periodStart.toISOString().slice(0, 10).replace(/-/g, '')}-${sub.variantId}`;
+            // The attempt number keeps a retry after a decline from replaying the provider's cached refusal.
+            const reference = `${sub.orderCode}-R${periodStart.toISOString().slice(0, 10).replace(/-/g, '')}-${sub.variantId}-a${sub.failures}`;
             const r = await provider.chargeStored(method.args, { customerRef: sub.providerCustomerRef, paymentRef: sub.providerPaymentRef, amount: sub.amount * sub.quantity, currency: sub.currency, reference, description: `${sub.variantName} × ${sub.quantity} renewal` });
             if (r.state === 'Settled' || r.state === 'Authorized') {
-                const nextEnd = new Date(Math.max(periodStart.getTime(), Date.now()) + intervalMs(sub.interval, sub.intervalCount));
+                const nextEnd = addInterval(new Date(Math.max(periodStart.getTime(), Date.now())), sub.interval, sub.intervalCount);
                 await this.update(sub.id, { status: 'active', failures: 0, currentPeriodEnd: this.sqlDate(nextEnd), nextChargeAt: this.sqlDate(nextEnd) });
                 await this.ledger.record({ channelId: sub.channelId, provider: sub.provider, kind: 'renewal', status: 'ok', orderId: sub.orderId, orderCode: sub.orderCode, paymentRef: r.transactionId || reference, amount: sub.amount * sub.quantity, currency: sub.currency, meta: { subscriptionId: sub.id, reference } });
                 out.charged++;

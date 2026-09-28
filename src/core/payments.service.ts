@@ -12,6 +12,10 @@ import { request } from './rest';
 import { ensureMollieCustomer } from '../providers/mollie';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
+/** Payment states that no longer take part in matching or de-duplication. */
+const TERMINAL_PAYMENT_STATES = new Set(['Declined', 'Cancelled', 'Error']);
+const PAID_ORDER_STATES = new Set(['PaymentSettled', 'PaymentAuthorized', 'Delivered', 'Shipped', 'PartiallyDelivered', 'PartiallyShipped']);
+
 export interface OfferedProvider {
     methodCode: string;
     provider: string;
@@ -79,9 +83,10 @@ export class PaymentsService {
 
     // ── Sessions ────────────────────────────────────────────────────────
     async createSession(ctx: RequestContext, order: Order, methodCode: string, opts: SessionOptions): Promise<ClientSession & { methodCode: string }> {
-        const method = await resolveMethod(this.connection, await this.handlerCodeFor(methodCode, ctx.channelId as number), ctx.channelId as number, methodCode);
+        const handlerCode = await this.handlerCodeFor(methodCode, ctx.channelId as number);
+        const method = await resolveMethod(this.connection, handlerCode, ctx.channelId as number, methodCode);
         if (!method) throw new Error(`Payment method ${methodCode} is not configured on this channel`);
-        const provider = getProvider(await this.handlerCodeFor(methodCode, ctx.channelId as number));
+        const provider = getProvider(handlerCode);
         if (!provider) throw new Error(`Unknown provider for ${methodCode}`);
         if (!provider.freeTier) requirePremium(provider.name);
         const subscription = this.subscriptions.orderHasSubscriptionLines(order);
@@ -182,18 +187,39 @@ export class PaymentsService {
             await this.subscriptions.applyEvent(providerCode, ev, method.args);
             if (ev.type.startsWith('subscription.')) return;
         }
-        const ctx = await this.adminCtx(method.channelIds[0]);
-        const order = ev.orderCode ? await this.orderService.findOneByCode(ctx, ev.orderCode, ['payments', 'payments.refunds', 'channels', 'customer', 'lines']) : await this.findOrderByPaymentRef(ctx, ev.paymentRef);
-        const channelId = order ? Number((order.channels || []).find((c: any) => c.code !== '__default_channel__')?.id || order.channels?.[0]?.id || ctx.channelId) : (method.channelIds[0] || null);
+        // Locate the order (default-channel ctx sees every channel), then act in
+        // the ORDER's channel with the method that channel actually uses — two
+        // channels sharing one provider account have different method codes.
+        const baseCtx = await this.adminCtx(method.channelIds[0]);
+        const located = ev.orderCode ? await this.orderService.findOneByCode(baseCtx, ev.orderCode, ['payments', 'payments.refunds', 'channels', 'customer', 'lines']) : await this.findOrderByPaymentRef(baseCtx, ev.paymentRef);
+        const channelId = located ? Number((located.channels || []).find((c: any) => c.code !== '__default_channel__')?.id || located.channels?.[0]?.id || baseCtx.channelId) : (method.channelIds[0] || null);
+        const actCtx = located && channelId && Number(baseCtx.channelId) !== channelId ? await this.adminCtx(channelId) : baseCtx;
+        if (located && channelId) {
+            const mine = (await listHuloMethods(this.connection, channelId)).find(m => m.handlerCode === method.handlerCode && (located.payments || []).some(p => p.method === m.paymentMethodCode));
+            if (mine) method = mine;
+        }
+        // Every write below runs in one transaction with the order row locked:
+        // Vendure's addPaymentToOrder insists on a transaction, and a webhook
+        // delivered twice (or racing the customer's own completion) must not
+        // record two payments.
+        await this.connection.withTransaction(actCtx, async ctx => {
+        const order = located ? await this.lockOrder(ctx, located.id) : undefined;
         const rec = (kind: any, status: any, extra: Partial<Parameters<LedgerService['record']>[0]> = {}) =>
             this.ledger.record({ channelId, provider: providerCode, kind, status, orderId: order ? (order.id as number) : null, orderCode: order?.code || ev.orderCode || null, paymentRef: ev.paymentRef || null, amount: ev.amount ?? null, currency: ev.currency || order?.currencyCode || null, reason: ev.reason || null, meta: { event: ev.type, eventId: ev.id }, ...extra });
-        const payment = order?.payments?.find(p => p.method === method.paymentMethodCode && (p.transactionId === ev.paymentRef || !ev.paymentRef || String(p.transactionId).startsWith('adyen-session:') || String(p.metadata?.paypalOrderId || '') === ev.paymentRef));
+        // Match the live payment for this event: exact reference first, then the
+        // provider-specific aliases; never a Declined/Cancelled/Error one (an
+        // Adyen decline-then-retry must settle the retry, not the failure).
+        const live = (order?.payments || []).filter(p => p.method === method.paymentMethodCode && !TERMINAL_PAYMENT_STATES.has(p.state));
+        const payment = live.find(p => ev.paymentRef && p.transactionId === ev.paymentRef)
+            ?? live.find(p => ev.paymentRef && String(p.metadata?.paypalOrderId || '') === ev.paymentRef)
+            ?? live.find(p => ev.paymentRef && String(p.transactionId).startsWith('adyen-session:') && p.state === 'Authorized')
+            ?? (!ev.paymentRef ? live[0] : undefined);
 
         switch (ev.type) {
             case 'payment.authorized': {
                 if (!order || !payment) { await rec('authorize', 'ok'); return; }
                 if (ev.paymentRef && String(payment.transactionId).startsWith('adyen-session:')) {
-                    await this.db.query(`UPDATE payment SET transactionId = ? WHERE id = ?`, [ev.paymentRef, payment.id]);
+                    await this.db.query(`UPDATE payment SET \`transactionId\` = ? WHERE id = ?`, [ev.paymentRef, payment.id]);
                     payment.transactionId = ev.paymentRef;
                 }
                 await rec('authorize', 'ok', { meta: { event: ev.type, eventId: ev.id, via: 'webhook' } });
@@ -213,8 +239,22 @@ export class PaymentsService {
                     if (r?.errorCode) Logger.warn(`settle after webhook failed for ${order.code}: ${r.message}`, loggerCtx);
                     return; // the handler's settle wrote the ledger row
                 }
-                if (!payment && order.state === 'ArrangingPayment' && !(order.payments || []).some(p => p.method !== method.paymentMethodCode)) {
-                    await this.addPaymentFromWebhook(ctx, order, method, ev);
+                if (!payment && !(order.payments || []).some(p => p.method !== method.paymentMethodCode && !TERMINAL_PAYMENT_STATES.has(p.state))) {
+                    let target: Order | undefined = order;
+                    if (order.state !== 'ArrangingPayment') {
+                        // A pay-by-link from a provider that reports plain settlement
+                        // (Adyen, Mollie, Square, Checkout.com, Coinbase): the order is a
+                        // draft/quote that never entered ArrangingPayment.
+                        const viaLink = !!ev.raw?.metadata?.huloPayLink || !!ev.raw?.data?.object?.metadata?.huloPayLink || await this.ledger.hasPendingPayLink(order.code);
+                        if (!viaLink || PAID_ORDER_STATES.has(order.state)) {
+                            await rec('capture', 'ok', { meta: { event: ev.type, eventId: ev.id, note: 'no matching Vendure payment' } });
+                            return;
+                        }
+                        const t: any = await this.orderService.transitionToState(ctx, order.id, 'ArrangingPayment');
+                        if (t?.errorCode) { await rec('paylink', 'failed', { reason: t.message }); return; }
+                        target = (await this.orderService.findOne(ctx, order.id, ['payments', 'channels'])) || order;
+                    }
+                    await this.addPaymentFromWebhook(ctx, target, method, ev);
                     return;
                 }
                 if (payment?.state !== 'Settled') await rec('capture', 'ok', { meta: { event: ev.type, eventId: ev.id, note: 'no matching Vendure payment' } });
@@ -243,7 +283,7 @@ export class PaymentsService {
             case 'dispute.opened':
             case 'dispute.closed': {
                 await rec('dispute', ev.type === 'dispute.opened' ? 'open' : (/won|reversed|resolved_seller|seller_favour/i.test(ev.reason || '') ? 'won' : 'lost'));
-                await getRuntime().notifyOps({ kind: `payments.${ev.type}`, subject: `${provider.name} dispute ${ev.type === 'dispute.opened' ? 'opened' : 'closed'}${order ? ` on order ${order.code}` : ''}`, text: `${provider.name} reported a ${ev.type === 'dispute.opened' ? 'new' : 'closed'} dispute${ev.reason ? ` (${ev.reason})` : ''}${ev.amount != null ? ` for ${ev.amount / 100} ${ev.currency}` : ''}. Payment ref ${ev.paymentRef || '?'}.`, orderCode: order?.code, channelId });
+                void getRuntime().notifyOps({ kind: `payments.${ev.type}`, subject: `${provider.name} dispute ${ev.type === 'dispute.opened' ? 'opened' : 'closed'}${order ? ` on order ${order.code}` : ''}`, text: `${provider.name} reported a ${ev.type === 'dispute.opened' ? 'new' : 'closed'} dispute${ev.reason ? ` (${ev.reason})` : ''}${ev.amount != null ? ` for ${ev.amount / 100} ${ev.currency}` : ''}. Payment ref ${ev.paymentRef || '?'}.`, orderCode: order?.code, channelId });
                 return;
             }
             case 'paylink.completed': {
@@ -259,9 +299,23 @@ export class PaymentsService {
             default:
                 return;
         }
+        });
+    }
+
+    /** The order row under `SELECT … FOR UPDATE`, then a fresh copy with its payments. */
+    private async lockOrder(ctx: RequestContext, id: ID): Promise<Order | undefined> {
+        await this.connection.getRepository(ctx, Order).createQueryBuilder('o').setLock('pessimistic_write').where('o.id = :id', { id }).getOne();
+        return (await this.orderService.findOne(ctx, id, ['payments', 'payments.refunds', 'channels', 'customer', 'lines'])) || undefined;
     }
 
     private async addPaymentFromWebhook(ctx: RequestContext, order: Order, method: ResolvedMethod, ev: NormalisedEvent): Promise<void> {
+        // The customer's own completion may have landed first (same locked order, fresh payments).
+        const ref = ev.paymentRef || '';
+        const sessionId = String(ev.raw?.sessionId || '');
+        const dup = (order.payments || []).some(p => !TERMINAL_PAYMENT_STATES.has(p.state)
+            && ((ref && (p.transactionId === ref || String(p.metadata?.paymentIntentId || '') === ref || String(p.metadata?.molliePaymentId || '') === ref || String(p.metadata?.paypalOrderId || '') === ref))
+                || (sessionId && String(p.metadata?.sessionId || '') === sessionId)));
+        if (dup) { Logger.verbose(`${ev.type} for ${order.code}: payment already recorded, skipped`, loggerCtx); return; }
         const metadata = { paymentIntentId: ev.paymentRef, molliePaymentId: ev.paymentRef, paypalOrderId: ev.paymentRef, sessionId: ev.raw?.sessionId, viaWebhook: ev.type };
         const r: any = await this.orderService.addPaymentToOrder(ctx, order.id, { method: method.paymentMethodCode, metadata });
         if (r?.errorCode) {
@@ -274,7 +328,7 @@ export class PaymentsService {
 
     private async findOrderByPaymentRef(ctx: RequestContext, ref?: string): Promise<Order | undefined> {
         if (!ref) return undefined;
-        const [row] = await this.db.query(`SELECT orderId FROM payment WHERE transactionId = ? ORDER BY id DESC LIMIT 1`, [ref]).catch(() => []);
+        const [row] = await this.db.query(`SELECT \`orderId\` FROM payment WHERE \`transactionId\` = ? ORDER BY id DESC LIMIT 1`, [ref]).catch(() => []);
         if (!row?.orderId) return undefined;
         return this.orderService.findOne(ctx, row.orderId as ID, ['payments', 'payments.refunds', 'channels', 'customer', 'lines']);
     }

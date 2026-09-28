@@ -1,4 +1,6 @@
-import { TransactionalConnection } from '@vendure/core';
+import { Logger, TransactionalConnection } from '@vendure/core';
+
+const loggerCtx = 'HuloPayments';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { ProviderArgs } from './provider';
 
@@ -22,7 +24,7 @@ export interface ResolvedMethod {
     channelIds: number[];
 }
 
-function parseHandler(handler: any): { code: string; args: ProviderArgs } {
+export function parseHandler(handler: any): { code: string; args: ProviderArgs } {
     try {
         const h = typeof handler === 'string' ? JSON.parse(handler) : handler;
         const args: ProviderArgs = {};
@@ -36,7 +38,8 @@ function parseHandler(handler: any): { code: string; args: ProviderArgs } {
 function coerce(v: any): any {
     if (v === 'true') return true;
     if (v === 'false') return false;
-    if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16) return Number(v);
+    // Numbers only when the text round-trips exactly: "01234567" (a UK account number) must stay a string.
+    if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16 && String(Number(v)) === v) return Number(v);
     if (typeof v === 'string' && (v.startsWith('[') || v.startsWith('{'))) { try { return JSON.parse(v); } catch { return v; } }
     return v;
 }
@@ -45,11 +48,11 @@ function coerce(v: any): any {
 export async function listHuloMethods(connection: TransactionalConnection, channelId?: number): Promise<Array<ResolvedMethod & { handlerCode: string }>> {
     const db = adapterFor(connection.rawConnection);
     const rows: any[] = await db.query(
-        `SELECT pm.id, pm.code, pm.enabled, pm.handler, GROUP_CONCAT(pmc.channelId) AS channelIds
+        `SELECT pm.id, pm.code, pm.enabled, pm.handler, GROUP_CONCAT(pmc.\`channelId\`) AS channelIds
          FROM payment_method pm
-         LEFT JOIN payment_method_channels_channel pmc ON pmc.paymentMethodId = pm.id
+         LEFT JOIN payment_method_channels_channel pmc ON pmc.\`paymentMethodId\` = pm.id
          GROUP BY pm.id`,
-    ).catch(() => []);
+    ).catch((e: any) => { Logger.error(`listHuloMethods failed: ${e?.message || e}`, loggerCtx); return []; });
     const out: Array<ResolvedMethod & { handlerCode: string }> = [];
     for (const r of rows) {
         const { code, args } = parseHandler(r.handler);
@@ -81,7 +84,7 @@ export function redactArgs(args: ProviderArgs): ProviderArgs {
     const out: ProviderArgs = {};
     for (const [k, v] of Object.entries(args || {})) {
         out[k] = /secret|key|password|hmac|token/i.test(k) && !/public|publishable|client(Id|Key)$/i.test(k) && typeof v === 'string' && v
-            ? `${v.slice(0, 6)}…${v.slice(-4)}` : v;
+            ? (v.length > 20 ? `${v.slice(0, 6)}…${v.slice(-4)}` : '••••••••') : v;
     }
     return out;
 }

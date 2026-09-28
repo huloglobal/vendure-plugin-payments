@@ -5,8 +5,8 @@ import { describeLicence, evalInstanceId, performSelfUpdate, selfUpdateEnv } fro
 import { HuloPaymentsPlugin, getOptions } from './plugin';
 import { HuloPaymentsLicenceService } from './licence.service';
 
-function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
-    const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
+function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
+    const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
     if (!ctx.userHasPermissions(needed)) {
         res.status(403).json({ error: 'forbidden' });
         return true;
@@ -18,7 +18,7 @@ function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): bo
  * Plugin-level admin endpoints: version + update banner, effective
  * settings, and the licence lifecycle (activate / deactivate /
  * buy-from-admin / billing portal). Feature endpoints live in the
- * module controllers under the same `/checkout-guard` prefix.
+ * module controllers under the same `/hulo-payments` prefix.
  */
 @Controller('hulo-payments')
 export class HuloPaymentsLicenceController {
@@ -52,9 +52,10 @@ export class HuloPaymentsLicenceController {
 
     @Post('update/run')
     async updateRun(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (denyUnlessAdmin(ctx, res, 'superadmin')) return;
         const updater = HuloPaymentsPlugin.getUpdateChecker();
         const target = String(body?.version || updater?.getStatus()?.latest || '').trim();
+        if (target && !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(target)) return res.status(400).json({ ok: false, message: 'Not a valid version.' });
         if (!target) return res.status(400).json({ ok: false, message: 'No target version known yet — the registry check runs daily; try again shortly.' });
         const result = await performSelfUpdate({ packageName: HuloPaymentsPlugin.getPackageName(), targetVersion: target });
         return res.status(result.ok ? 200 : 400).json(result);
@@ -62,7 +63,7 @@ export class HuloPaymentsLicenceController {
 
     @Post('licence/activate')
     async licenceActivate(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
-        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (denyUnlessAdmin(ctx, res, 'superadmin')) return;
         const key = String(body?.key || '').trim();
         if (!key) return res.status(400).json({ licensed: false, message: 'Paste your licence key first.' });
         const status = HuloPaymentsPlugin.activateRuntimeLicence(key);
@@ -73,7 +74,7 @@ export class HuloPaymentsLicenceController {
 
     @Post('licence/deactivate')
     async licenceDeactivate(@Ctx() ctx: RequestContext, @Res() res: Response) {
-        if (denyUnlessAdmin(ctx, res, true)) return;
+        if (denyUnlessAdmin(ctx, res, 'superadmin')) return;
         await this.licence.clearStoredLicenceKey();
         HuloPaymentsPlugin.deactivateRuntimeLicence();
         return res.json({ licensed: false });
@@ -112,15 +113,16 @@ export class HuloPaymentsLicenceController {
     @Post('eval/remind-me')
     async evalRemindMe(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
-        const email = String(body?.email || '').trim();
+        const email = String(body?.email || '').trim().slice(0, 320);
         const instanceId = HuloPaymentsPlugin.getEvalInstanceId();
-        if (!email || !instanceId) return res.status(400).json({ error: 'bad-request' });
+        if (!/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(email) || !instanceId) return res.status(400).json({ error: 'bad-request' });
         try {
             const base = (process.env.HULO_LICENCE_EVAL_URL || 'https://elite.charity/licence/eval/register').replace(/\/register$/, '');
             const resp = await fetch(`${base}/lead`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ plugin: HuloPaymentsPlugin.getPackageName(), instanceId, email }),
+                signal: AbortSignal.timeout(8_000),
             });
             if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
             return res.json({ ok: true });

@@ -1,6 +1,6 @@
-import { Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, OnDestroy, ChangeDetectorRef } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
-import { BLURBS, MARKS, PAY_WITH, PROVIDER_GROUPS, STATUS_LABEL, methodStatus } from './provider-copy';
+import { BLURBS, MARKS, PAY_WITH, PROVIDER_GROUPS, PROVIDER_NAMES, STATUS_LABEL, methodStatus } from './provider-copy';
 import { HuloProvidersCacheService } from '../providers-cache.service';
 import { HttpClient } from '@angular/common/http';
 import { NotificationService, ModalService, getServerLocation } from '@vendure/admin-ui/core';
@@ -12,11 +12,12 @@ const API = `${getServerLocation().replace(/\/$/, '')}/hulo-payments`;
 
 type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink' | 'providers' | 'settings';
 
-const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-adyen': 'Adyen', 'hulo-paypal': 'PayPal', 'hulo-mollie': 'Mollie' };
 
 @Component({
     selector: 'hulo-payments',
     standalone: false,
+    // Loaders call markForCheck(); OnPush stops ~100 template helper calls re-running on every event.
+    changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <!-- ── Hero ────────────────────────────────────────────────── -->
         <vdr-page-block>
@@ -154,7 +155,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                 <div class="two-col">
                     <div class="card"><div class="card-block">
                         <div class="row-between"><h3 class="step-title" style="margin:0">Daily volume</h3><select class="form-select" [(ngModel)]="days" (ngModelChange)="loadDashboard()"><option [ngValue]="7">7 days</option><option [ngValue]="30">30 days</option><option [ngValue]="90">90 days</option></select></div>
-                        <div class="bar" *ngIf="dayBars().length; else noVol"><div *ngFor="let b of dayBars()" [style.height.%]="b.pct" [title]="b.day + ': ' + money(b.volume, mainCurrency())"></div></div>
+                        <div class="bar" *ngIf="bars.length; else noVol"><div *ngFor="let b of bars; trackBy: trackByDay" [style.height.%]="b.pct" [title]="b.day + ': ' + money(b.volume, mainCurrency())"></div></div>
                         <ng-template #noVol><p class="hint">No captured payments in this period yet.</p></ng-template>
                     </div></div>
                     <div class="card"><div class="card-block">
@@ -192,7 +193,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                 <table class="table" *ngIf="txns?.items?.length; else noTxns">
                     <thead><tr><th>When</th><th>Provider</th><th>Kind</th><th>Order</th><th class="num">Amount</th><th>Reference</th><th>Status</th></tr></thead>
                     <tbody>
-                        <tr *ngFor="let t of txns.items">
+                        <tr *ngFor="let t of txns.items; trackBy: trackById">
                             <td class="nowrap" [title]="t.createdAt">{{ relative(t.createdAt) }}</td>
                             <td>{{ providerName(t.provider) }}</td>
                             <td>{{ t.kind }}</td>
@@ -227,7 +228,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                 <table class="table" *ngIf="subs?.items?.length; else noSubs">
                     <thead><tr><th>Customer</th><th>Product</th><th>Provider</th><th class="num">Per period</th><th>Billing</th><th>Status</th><th>Next / period end</th><th></th></tr></thead>
                     <tbody>
-                        <tr *ngFor="let s of subs.items">
+                        <tr *ngFor="let s of subs.items; trackBy: trackById">
                             <td>{{ s.customerEmail }}<div class="hint" style="margin:0">order <a *ngIf="s.orderId" [routerLink]="['/orders', s.orderId]">{{ s.orderCode }}</a></div></td>
                             <td>{{ s.variantName }} × {{ s.quantity }}</td>
                             <td>{{ providerName(s.provider) }}<div class="mono small muted">{{ s.providerSubscriptionRef }}</div></td>
@@ -271,7 +272,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                     <h3 class="step-title">Recent links</h3>
                     <table class="table" *ngIf="links?.items?.length; else noLinks">
                         <thead><tr><th>When</th><th>Order</th><th class="num">Amount</th><th>Provider</th><th>Status</th></tr></thead>
-                        <tbody><tr *ngFor="let t of links.items"><td class="nowrap">{{ relative(t.createdAt) }}</td><td><a *ngIf="t.orderId" [routerLink]="['/orders', t.orderId]">{{ t.orderCode }}</a></td><td class="num">{{ money(t.amount, t.currency) }}</td><td>{{ providerName(t.provider) }}</td><td><span class="pill" [ngClass]="t.status">{{ t.status === 'pending' ? 'sent' : t.status === 'ok' ? 'paid' : t.status }}</span></td></tr></tbody>
+                        <tbody><tr *ngFor="let t of links.items; trackBy: trackById"><td class="nowrap">{{ relative(t.createdAt) }}</td><td><a *ngIf="t.orderId" [routerLink]="['/orders', t.orderId]">{{ t.orderCode }}</a></td><td class="num">{{ money(t.amount, t.currency) }}</td><td>{{ providerName(t.provider) }}</td><td><span class="pill" [ngClass]="t.status">{{ t.status === 'pending' ? 'sent' : t.status === 'ok' ? 'paid' : t.status }}</span></td></tr></tbody>
                     </table>
                     <ng-template #noLinks><p class="hint">No links created yet.</p></ng-template>
                 </div></div>
@@ -342,7 +343,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                         <div class="prov-detail" *ngIf="expanded === p.code">
                             <p class="prov-blurb">{{ blurb(p.code) }}</p>
                             <div class="caps">
-                                <span class="cap" [class.on]="p.capabilities.manualCapture">holds</span><span class="cap" [class.on]="p.capabilities.refunds">refunds</span><span class="cap" [class.on]="p.capabilities.subscriptions">subscriptions</span><span class="cap" [class.on]="p.capabilities.savedCards">saved cards</span><span class="cap" [class.on]="p.capabilities.payLinks">pay-by-link</span><span class="cap" [class.on]="p.capabilities.disputes">disputes</span><span class="cap" [class.on]="p.capabilities.offline">offline</span>
+                                <span class="cap" [class.on]="p.capabilities.manualCapture">holds</span><span class="cap" [class.on]="p.capabilities.refunds">refunds</span><span class="cap" [class.on]="p.capabilities.subscriptions">subscriptions</span><span class="cap" [class.on]="p.capabilities.savedCards">saved cards</span><span class="cap" [class.on]="p.capabilities.payByLink">pay-by-link</span><span class="cap" [class.on]="p.capabilities.disputes">disputes</span><span class="cap" [class.on]="p.capabilities.offline">offline</span>
                             </div>
                             <div class="picker small" style="margin-top:8px">
                                 <a *ngIf="p.links?.dashboard" [href]="p.links.dashboard" target="_blank" rel="noopener">{{ p.name }} dashboard ↗</a>
@@ -387,7 +388,7 @@ const PROVIDER_NAMES: Record<string, string> = { 'hulo-stripe': 'Stripe', 'hulo-
                 <h3 class="step-title">Recent webhook deliveries</h3>
                 <table class="table" *ngIf="events?.length; else noEvents">
                     <thead><tr><th>Received</th><th>Provider</th><th>Event</th><th>Order</th><th>Result</th></tr></thead>
-                    <tbody><tr *ngFor="let e of events"><td class="nowrap">{{ relative(e.receivedAt) }}</td><td>{{ providerName(e.provider) }}</td><td class="mono small">{{ e.type }}<div class="muted">{{ e.eventId }}</div></td><td>{{ e.orderCode || '—' }}</td><td><span class="pill" [ngClass]="e.error ? 'failed' : (e.processedAt ? 'ok' : 'pending')">{{ e.error ? 'error' : (e.processedAt ? 'processed' : 'received') }}</span><div class="small muted" *ngIf="e.error">{{ e.error }}</div></td></tr></tbody>
+                    <tbody><tr *ngFor="let e of events; trackBy: trackById"><td class="nowrap">{{ relative(e.receivedAt) }}</td><td>{{ providerName(e.provider) }}</td><td class="mono small">{{ e.type }}<div class="muted">{{ e.eventId }}</div></td><td>{{ e.orderCode || '—' }}</td><td><span class="pill" [ngClass]="e.error ? 'failed' : (e.processedAt ? 'ok' : 'pending')">{{ e.error ? 'error' : (e.processedAt ? 'processed' : 'received') }}</span><div class="small muted" *ngIf="e.error">{{ e.error }}</div></td></tr></tbody>
                 </table>
                 <ng-template #noEvents><p class="hint">No webhooks received yet — send a test event from the provider dashboard to check the URL and secret.</p></ng-template>
             </div></div>
@@ -786,23 +787,27 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     private pendingConnect = '';
     ngOnDestroy() { this.stopClaimPoll(); }
 
-    reloadAll() { this.loadMeta(); this.loadDashboard(); this.go(this.tab); }
+    reloadAll() { this.loadMeta(); if (this.tab !== 'overview') this.loadDashboard(); this.go(this.tab, true); }
 
     loadMeta() {
         this.http.get<any>(`${API}/meta`, this.h()).subscribe({ next: m => { this.meta = m; this.loading = false; this.cdr.markForCheck(); }, error: () => { this.loading = false; this.cdr.markForCheck(); } });
     }
 
-    go(t: Tab) {
+    /** Switch tab; data already on screen is kept unless `force` (Refresh) — filters and actions call the loaders directly. */
+    go(t: Tab, force = false) {
         this.tab = t;
-        if (t === 'overview') this.loadDashboard();
-        if (t === 'transactions') this.loadTxns();
-        if (t === 'subscriptions') this.loadSubs();
-        if (t === 'paylink') this.loadLinks();
-        if (t === 'providers' || t === 'methods') this.loadProviders();
-        if (t === 'settings') this.loadSettings();
+        if (t === 'overview' && (force || !this.dash)) this.loadDashboard();
+        if (t === 'transactions' && (force || !this.txns)) this.loadTxns();
+        if (t === 'subscriptions' && (force || !this.subs)) this.loadSubs();
+        if (t === 'paylink' && (force || !this.links)) this.loadLinks();
+        if ((t === 'providers' || t === 'methods') && (force || !this.providers)) this.loadProviders();
+        if (t === 'settings' && (force || !this.settingsList)) this.loadSettings();
+        this.cdr.markForCheck();
     }
+    trackById(_: number, r: any) { return r?.id ?? _; }
+    trackByDay(_: number, b: { day: string }) { return b?.day ?? _; }
 
-    loadDashboard() { this.http.get<any>(`${API}/dashboard`, this.h({ params: { days: String(this.days) } })).subscribe({ next: d => { this.dash = d; this.cdr.markForCheck(); }, error: () => undefined }); }
+    loadDashboard() { this.http.get<any>(`${API}/dashboard`, this.h({ params: { days: String(this.days) } })).subscribe({ next: d => { this.dash = d; this.bars = this.computeBars(d); this.cdr.markForCheck(); }, error: () => undefined }); }
     loadTxns() {
         const params: any = { kind: this.txnKind, status: this.txnStatus, page: String(this.txnPage) };
         if (this.txnSearch) params.q = this.txnSearch;
@@ -837,8 +842,9 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (j < 0 || j >= o.length) return;
         [o[i], o[j]] = [o[j], o[i]];
     }
-    providerCodes(): string[] { return Object.keys(PROVIDER_NAMES); }
-    providerName(code: string): string { return PROVIDER_NAMES[code] || code; }
+    /** Every provider the server knows (the surcharge table used to list only four). */
+    providerCodes(): string[] { const fromDash = (this.dash?.providers || []).map((p: any) => p.code); return fromDash.length ? fromDash : Object.keys(PROVIDER_NAMES); }
+    providerName(code: string): string { return PROVIDER_NAMES[code] || (this.dash?.providers || []).find((p: any) => p.code === code)?.name || code; }
     surcharge(code: string) { return this.cfg.surcharges[code] || { type: 'percent', value: 0, label: '' }; }
     setSurcharge(code: string, key: string, value: any) { this.cfg.surcharges = { ...this.cfg.surcharges, [code]: { ...this.surcharge(code), [key]: key === 'value' ? Number(value) || 0 : value } }; }
 
@@ -940,7 +946,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     connect(p: any) {
         this.busy = true; this.connectResult = null;
         this.http.post<any>(`${API}/connect/${p.code}`, { channelId: this.connectChannel, args: this.connectArgs }, this.h()).subscribe({
-            next: r => { this.busy = false; this.connectResult = r; this.notification.success(`${p.name} connected`); this.loadProviders(); this.loadDashboard(); this.cdr.markForCheck(); },
+            next: r => { this.busy = false; this.connectResult = r; this.notification.success(`${p.name} connected`); this.cache.invalidate(); this.loadProviders(); this.loadDashboard(); this.cdr.markForCheck(); },
             error: e => { this.busy = false; this.connectResult = { ok: false, message: e?.error?.message || this.errMsg(e, 'Connect failed') }; this.cdr.markForCheck(); },
         });
     }
@@ -956,8 +962,9 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     mainCurrency(): string { const c = Object.keys(this.dash?.subscriptions?.mrr || {})[0]; return c || 'GBP'; }
     mrrLabel(): string { const m = this.dash?.subscriptions?.mrr || {}; const keys = Object.keys(m); return keys.length ? keys.map(k => this.money(m[k], k)).join(' + ') : '—'; }
     providerStat(code: string, key: string): number { const r = (this.dash?.ledger?.byProvider || []).find((x: any) => x.provider === code); return Number(r?.[key] || 0); }
-    dayBars(): Array<{ day: string; volume: number; pct: number }> {
-        const rows: any[] = this.dash?.ledger?.byDay || [];
+    bars: Array<{ day: string; volume: number; pct: number }> = [];
+    private computeBars(dash: any): Array<{ day: string; volume: number; pct: number }> {
+        const rows: any[] = dash?.ledger?.byDay || [];
         const byDay = new Map<string, number>();
         for (const r of rows) { const d = String(r.day).slice(0, 10); byDay.set(d, (byDay.get(d) || 0) + Number(r.volume || 0)); }
         const max = Math.max(1, ...byDay.values());

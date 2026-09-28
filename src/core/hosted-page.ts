@@ -26,7 +26,10 @@ export interface HostedPageModel {
     lines: Array<{ name: string; quantity: number; total: number }>;
 }
 
-const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+export const esc = (s: any) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
+/** A value embedded inside `<script>`: JSON with `<`, U+2028 and U+2029 escaped so it can never close the script block. */
+export const js = (v: any) => JSON.stringify(v ?? '').replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 
 function money(minor: number, currency: string, locale: string): string {
     try { return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(minor / 100); } catch { return `${(minor / 100).toFixed(2)} ${currency}`; }
@@ -41,10 +44,10 @@ export function renderHostedPage(m: HostedPageModel): string {
     const providerButtons = m.providers.map(p => `
         <button type="button" class="method" data-method="${esc(p.methodCode)}" data-provider="${esc(p.provider)}">
             <span class="icon">${esc(ICONS[p.provider] || 'Pay')}</span>
-            <span class="label"><strong>${esc(p.name)}</strong>${p.wallets?.length ? `<small>${esc(p.wallets.slice(0, 4).map(w => w.replace(/_/g, ' ')).join(' · '))}</small>` : ''}${p.surcharge?.value ? `<small>${p.surcharge.type === 'percent' ? `+${p.surcharge.value}% fee` : `+${money(p.surcharge.value, m.currency, m.locale)} fee`}</small>` : ''}</span>
+            <span class="label"><strong>${esc(p.name)}</strong>${p.wallets?.length ? `<small>${esc(p.wallets.slice(0, 4).map(w => w.replace(/_/g, ' ')).join(' · '))}</small>` : ''}${p.surcharge?.value ? `<small>${p.surcharge.type === 'percent' ? `+${esc(p.surcharge.value)}% fee` : `+${money(p.surcharge.value, m.currency, m.locale)} fee`}</small>` : ''}</span>
         </button>`).join('');
     const lines = m.lines.slice(0, 12).map(l => `<li><span>${l.quantity} × ${esc(l.name)}</span><span>${money(l.total, m.currency, m.locale)}</span></li>`).join('');
-    return `<!doctype html><html lang="${esc(m.locale.split(/[-_]/)[0] || 'en')}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+    return `<!doctype html><html lang="${esc((m.locale.split(/[-_]/)[0] || 'en').replace(/[^a-zA-Z]/g, '').slice(0, 3) || 'en')}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>Pay ${money(m.amount, m.currency, m.locale)} · ${esc(m.brand)}</title>
 <style>
 :root{--accent:${esc(m.accent || '#1d4ed8')};--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--bg:#f6f7f9}
@@ -86,9 +89,9 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
 </div>
 <script>
 (function(){
-  var TOKEN = ${JSON.stringify(m.token)}, BASE = location.pathname.replace(/\\/$/, ''), AMOUNT_LABEL = ${JSON.stringify(money(m.amount, m.currency, m.locale))};
+  var TOKEN = ${js(m.token)}, BASE = location.pathname.replace(/\\/$/, ''), AMOUNT_LABEL = ${js(money(m.amount, m.currency, m.locale))};
   var RETURNED = ${m.returned ? 'true' : 'false'};
-  var PRESELECT = ${JSON.stringify(m.preselect || '')};
+  var PRESELECT = ${js(m.preselect || '')};
   var $ = function(id){ return document.getElementById(id); };
   var current = null, session = null, stripe = null, elements = null, btInstance = null, sqCard = null, sqPayments = null;
   function status(kind, text){ var s = $('status'); s.className = 'status ' + kind; s.textContent = text; s.classList.remove('hidden'); }

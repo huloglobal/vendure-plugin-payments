@@ -68,6 +68,7 @@ plugins: [
     publicBaseUrl: 'https://shop.example.com',        // webhook + return URLs
     licenceKey: process.env.HULO_LICENCE_KEY_PAYMENTS, // optional — or activate in the admin
     ops: { email: 'ops@example.com', webhookUrl: process.env.OPS_SLACK_WEBHOOK },
+    hostedReturnHosts: ['shop.example.com'],          // optional: hosts the hosted checkout may return to
   }),
   AdminUiPlugin.init({
     app: compileUiExtensions({ extensions: [HuloPaymentsPlugin.uiExtensions /* … */] }),
@@ -140,7 +141,11 @@ plugin creates the subscription with the provider (or schedules it itself
 for Adyen), records renewals in the ledger, alerts on failed renewals and
 cancels after the configured number of failed daily attempts. PayPal
 subscriptions need one customer approval; the approval link is exposed on
-`huloMySubscriptions` and in the admin.
+`huloMySubscriptions` and in the admin. Renewal periods are calendar months
+and years (a monthly plan bills on the same day each month). The renewal
+scheduler runs hourly on the worker; the plugin registers Nest's
+`ScheduleModule` itself, so no host wiring is needed. Set
+`disableScheduler: true` to run it elsewhere.
 
 ## Tiers
 

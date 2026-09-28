@@ -5,6 +5,81 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] — 2026-09-28
+
+Reliability and security pass — no new features. Two columns on
+`hulo_hosted_session`, a unique key on `hulo_subscription`, one index on
+`hulo_payment_txn` and a best-effort index on Vendure's `payment` table are
+added on boot; nothing to migrate.
+
+### Fixed
+- **Webhook-created payments.** Payments recorded from a webhook (pay-by-link
+  completion, a redirect-flow `payment.settled` arriving before the customer
+  returns) called `addPaymentToOrder` outside a transaction, which Vendure
+  3.7 rejects; the event was then marked processed and lost. Every webhook is
+  now applied inside one transaction with the order row locked, in the
+  order's own channel with that channel's method code.
+- **Duplicate payments.** A webhook racing the customer's own completion (or
+  Stripe's `checkout.session.completed` + `payment_intent.succeeded` pair)
+  can no longer record two payments: both paths lock the order and skip a
+  reference that is already on a live payment. The hosted `/complete` route
+  also holds a one-minute lease on the session row so a double submit is
+  answered from the order's state.
+- **Payment matching** ignores Declined/Cancelled/Error payments, so an
+  Adyen decline-then-retry settles the retry instead of the failure.
+- **Webhook redelivery.** A processing error now releases the idempotency
+  claim and answers 5xx, so the provider redelivers instead of the paid
+  event being lost.
+- **Subscription double charge.** Due renewals are claimed with a
+  conditional `UPDATE` before the provider is called (the hourly cron and
+  the admin "run now" run in different processes); the charge reference
+  includes the attempt number so a retry never replays a cached refusal.
+  Subscription rows are claimed with a pending row + unique key before the
+  provider subscription is created (the bus fires for PaymentAuthorized and
+  PaymentSettled seconds apart). Monthly and yearly periods are calendar
+  arithmetic instead of 30/365 days. The plugin registers `ScheduleModule`
+  itself, so renewals run on hosts that never wired it; `disableScheduler`
+  is honoured.
+- **Hosted checkout page.** Values embedded in the page script are
+  serialised so they can never close the script block; `returnUrl` and
+  `cancelUrl` must be absolute http(s) URLs (optionally restricted with the
+  new `hostedReturnHosts` option); `methodCode` and `locale` are validated;
+  client metadata is allow-listed and server-side session ids win; provider
+  and Vendure error text no longer reaches the customer; clickjacking and
+  referrer headers are set; each link allows at most 30 provider sessions;
+  expiry is stored as a date (no UTC/local drift); expired rows are purged.
+- **Postgres.** Raw queries on Vendure tables quote their camelCase columns
+  (`channelId`, `paymentMethodId`, `transactionId`, `orderId`); the
+  subscription updater no longer quotes the plugin's own columns; the
+  channel lookup goes through the dialect adapter. Payment methods were
+  silently absent on Postgres before.
+- **Handler args.** Numeric strings with leading zeros (UK account numbers,
+  sort codes) stay strings instead of being converted to numbers.
+- **Stripe pay-by-link** uses one line for the order total so the intent
+  equals `order.totalWithTax` and the webhook accepts it; **GoCardless
+  refunds** send the required `total_amount_confirmation`; refund
+  idempotency keys are per minute, not per second.
+- **Permissions and scoping.** Self-update and licence activate/deactivate
+  need SuperAdmin; admins in a non-default channel only see and act on that
+  channel's ledger, settings, methods and connections; settings, pay-link
+  return URLs, days and e-mails are validated; short secrets are fully
+  redacted; the licence lead request times out after 8 s.
+- Ops alerts never hold a webhook response (dispute alerts are
+  fire-and-forget), use one pooled SMTP transport with timeouts and log
+  non-2xx replies. `ALTER TABLE … IF NOT EXISTS` is replaced by an
+  information-schema check (MySQL 8 boots again).
+
+### Changed
+- Admin UI: OnPush change detection, `trackBy` on every table, daily bars
+  computed once per load, tab switches keep loaded data (Refresh reloads),
+  every provider named in Transactions/Subscriptions/Routing and available
+  in the Surcharges table, the providers cache expires after 60 s and is
+  cleared after Connect, the pay-by-link capability chip reads the right
+  key, the method panel shows the method being edited, and the action-bar
+  button needs only ReadOrder.
+- `hulo_payment_event` rows older than 180 days and expired hosted sessions
+  older than 7 days are purged.
+
 ## [0.2.7] — 2026-09-25
 
 ### Fixed

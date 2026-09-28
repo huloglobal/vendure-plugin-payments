@@ -56,6 +56,7 @@ export class WebhookController {
             try { v = await provider.verifyWebhook(m.args, raw, req.headers as any, (req.query || {}) as any); }
             catch (e: any) { lastError = e.message; continue; }
             if (!v.ok) { lastError = v.error || 'verification failed'; continue; }
+            let failed = 0;
             for (const ev of v.events) {
                 if (ev.type === 'ignored') continue;
                 if (!(await this.ledger.claimEvent(providerCode, ev.id, ev.type, ev.orderCode || null))) continue;
@@ -63,10 +64,14 @@ export class WebhookController {
                     await this.payments.applyEvent(providerCode, ev, m);
                     await this.ledger.finishEvent(providerCode, ev.id);
                 } catch (e: any) {
-                    Logger.error(`${providerCode} webhook ${ev.type} (${ev.id}) failed: ${e.message}`, loggerCtx);
-                    await this.ledger.finishEvent(providerCode, ev.id, e.message);
+                    // Release the claim and answer 5xx so the provider redelivers; a
+                    // transient DB error must not swallow a paid event for good.
+                    failed++;
+                    Logger.error(`${providerCode} webhook ${ev.type} (${ev.id}) failed: ${e.message} — claim released for redelivery`, loggerCtx);
+                    await this.ledger.releaseEvent(providerCode, ev.id, e.message);
                 }
             }
+            if (failed) return res.status(500).json({ received: false, error: 'processing failed — retry', failed });
             if (v.reply !== undefined) return res.status(200).type('text/plain').send(typeof v.reply === 'string' ? v.reply : JSON.stringify(v.reply));
             return res.status(200).json({ received: true, events: v.events.filter(e => e.type !== 'ignored').length });
         }

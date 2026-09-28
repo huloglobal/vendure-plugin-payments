@@ -147,7 +147,7 @@ export const paypalProvider: PaymentProvider = {
         const captureId = metadata?.captureId || paymentRef;
         const r = await paypal(args, `/v2/payments/captures/${encodeURIComponent(captureId)}/refund`, {
             json: { amount: { currency_code: currency, value: toDecimalString(amount, currency) }, note_to_payer: reason ? String(reason).slice(0, 255) : undefined },
-            idempotencyKey: idem('hulo-pp-ref', captureId, amount, Date.now().toString(36).slice(0, 6)),
+            idempotencyKey: idem('hulo-pp-ref', captureId, amount, Math.floor(Date.now() / 60_000).toString(36)),
         });
         return { state: r.status === 'COMPLETED' ? 'Settled' : r.status === 'PENDING' ? 'Pending' : 'Failed', transactionId: r.id, metadata: { refundId: r.id, status: r.status } };
     },

@@ -4,6 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { filter } from 'rxjs/operators';
 import { SubscriptionService } from './subscription.service';
 import { loggerCtx } from '../core/ledger.service';
+import { getOptions } from '../plugin';
 
 /**
  * Starts subscriptions when an order's payment settles and runs the
@@ -32,7 +33,7 @@ export class SubscriptionCron implements OnApplicationBootstrap {
 
     @Cron(CronExpression.EVERY_HOUR)
     async tick() {
-        if (!this.processContext.isWorker || this.running) return;
+        if (getOptions().disableScheduler || !this.processContext.isWorker || this.running) return;
         this.running = true;
         try {
             const r = await this.subscriptions.runScheduler();

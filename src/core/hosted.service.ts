@@ -35,7 +35,20 @@ export class HostedCheckoutService implements OnModuleInit {
     constructor(private connection: TransactionalConnection) {}
     private get db() { return adapterFor(this.connection.rawConnection); }
 
-    async onModuleInit() { await this.ensureSchema(); }
+    async onModuleInit() {
+        await this.ensureSchema();
+        // Retention: a row per checkout attempt, never read again a week after it expired.
+        const purge = () => this.purge().catch(() => undefined);
+        void purge();
+        const t = setInterval(purge, 6 * 3600_000);
+        if (typeof t.unref === 'function') t.unref();
+    }
+
+    /** Rows whose link expired more than 7 days ago. */
+    async purge(): Promise<number> {
+        const r = await this.db.query(`DELETE FROM hulo_hosted_session WHERE expiresAt < DATE_SUB(NOW(), INTERVAL 7 DAY)`, [], { needAffected: true });
+        return Number(r?.affectedRows || 0);
+    }
 
     async ensureSchema(): Promise<void> {
         await this.db.query(`
@@ -56,6 +69,34 @@ export class HostedCheckoutService implements OnModuleInit {
                 UNIQUE KEY uq_hhs_token (token),
                 INDEX idx_hhs_order (orderId)
             )`);
+        // 0.2.8: a completion lease and a per-link session counter.
+        for (const ddl of [
+            'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS completingAt DATETIME NULL',
+            'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS sessionCount INT NOT NULL DEFAULT 0',
+        ]) {
+            try { await this.db.query(ddl); } catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+        }
+    }
+
+    /** Claim the right to run `/complete` for one minute; false when another call holds it or the link is spent. */
+    async beginComplete(token: string): Promise<boolean> {
+        const r = await this.db.query(
+            `UPDATE hulo_hosted_session SET completingAt = NOW()
+              WHERE token = ? AND completedAt IS NULL AND (completingAt IS NULL OR completingAt < DATE_SUB(NOW(), INTERVAL 1 MINUTE))`,
+            [token], { needAffected: true },
+        );
+        return Number(r?.affectedRows ?? r?.rowCount ?? 0) > 0;
+    }
+
+    async releaseComplete(token: string): Promise<void> {
+        await this.db.query(`UPDATE hulo_hosted_session SET completingAt = NULL WHERE token = ?`, [token]).catch(() => undefined);
+    }
+
+    /** Count a provider-session creation on this link; returns the new total. */
+    async bumpSessionCount(token: string): Promise<number> {
+        await this.db.query(`UPDATE hulo_hosted_session SET sessionCount = sessionCount + 1 WHERE token = ?`, [token]).catch(() => undefined);
+        const [row] = await this.db.query(`SELECT sessionCount FROM hulo_hosted_session WHERE token = ?`, [token]).catch(() => [] as any[]);
+        return Number(row?.sessionCount || 0);
     }
 
     async create(orderId: ID, orderCode: string, channelId: number, returnUrl: string, cancelUrl: string, locale: string, preferredMethod?: string): Promise<HostedSession> {
@@ -63,7 +104,7 @@ export class HostedCheckoutService implements OnModuleInit {
         const expires = new Date(Date.now() + TTL_MS);
         await this.db.query(
             `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, lastMethodCode, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-            [token, Number(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires.toISOString().slice(0, 19).replace('T', ' ')]);
+            [token, Number(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires]);
         return (await this.find(token))!;
     }
 

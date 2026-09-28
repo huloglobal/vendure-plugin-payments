@@ -2,6 +2,13 @@
  * Plain-language copy about each provider, shared by the Payments page, the
  * payment-method list column and the payment-method detail panel.
  */
+/** Display names for every provider code (the server's list is authoritative; this covers rows rendered before it loads). */
+export const PROVIDER_NAMES: Record<string, string> = {
+    'hulo-stripe': 'Stripe', 'hulo-adyen': 'Adyen', 'hulo-paypal': 'PayPal', 'hulo-mollie': 'Mollie', 'hulo-square': 'Square',
+    'hulo-braintree': 'Braintree', 'hulo-gocardless': 'GoCardless', 'hulo-checkout-com': 'Checkout.com', 'hulo-coinbase': 'Coinbase Commerce',
+    'hulo-bank-transfer': 'Bank transfer', 'hulo-pay-later': 'Pay later',
+};
+
 export interface ProviderGroup { id: string; title: string; hint: string; codes: string[] }
 
 /** How the Providers tab groups the catalogue — a shop owner's categories, not ours. */

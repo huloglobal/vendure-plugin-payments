@@ -63,7 +63,7 @@ export const squareProvider: PaymentProvider = {
     async capture(args, paymentRef) { try { await square(args, `/v2/payments/${paymentRef}/complete`, { json: {} }); return { success: true }; } catch (e: any) { return { success: false, errorMessage: e.message }; } },
     async cancel(args, paymentRef) { try { await square(args, `/v2/payments/${paymentRef}/cancel`, { json: {} }); return { success: true }; } catch (e: any) { return { success: false, errorMessage: e.message }; } },
     async refund(args, paymentRef, amount, currency, reason) {
-        const r = await square(args, '/v2/refunds', { json: { idempotency_key: idem('hulo-sq-ref', paymentRef, amount, Date.now().toString(36).slice(0, 6)), payment_id: paymentRef, amount_money: { amount: toProviderMinor(amount, currency), currency }, reason: reason ? String(reason).slice(0, 190) : undefined } });
+        const r = await square(args, '/v2/refunds', { json: { idempotency_key: idem('hulo-sq-ref', paymentRef, amount, Math.floor(Date.now() / 60_000).toString(36)), payment_id: paymentRef, amount_money: { amount: toProviderMinor(amount, currency), currency }, reason: reason ? String(reason).slice(0, 190) : undefined } });
         return { state: r.refund?.status === 'COMPLETED' ? 'Settled' : r.refund?.status === 'FAILED' || r.refund?.status === 'REJECTED' ? 'Failed' : 'Pending', transactionId: r.refund?.id, metadata: { status: r.refund?.status } };
     },
     async verifyWebhook(args, rawBody, headers): Promise<WebhookVerification> {

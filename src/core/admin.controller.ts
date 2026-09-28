@@ -3,6 +3,7 @@ import { Ctx, LanguageCode, OrderService, PaymentMethodService, Permission, Requ
 import type { Response } from 'express';
 import { allProviders, getProvider, ProviderArgs } from './provider';
 import { HANDLER_SHORT_NAMES, HANDLER_ARGS } from './handlers';
+import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from './credentials';
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
@@ -13,6 +14,28 @@ function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): bo
     const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
     if (!ctx.userHasPermissions(needed)) { res.status(403).json({ error: 'forbidden' }); return true; }
     return false;
+}
+
+/** True when the request is made in the default channel (which may see and act on every channel). */
+function inDefaultChannel(ctx: RequestContext): boolean {
+    return !ctx.channelId || ctx.channel?.code === '__default_channel__' || String(ctx.channelId) === '1';
+}
+
+/** The channel a read is scoped to: an operator in a non-default channel only sees that channel. */
+function scopedChannel(ctx: RequestContext, requested: unknown): number | null {
+    if (!inDefaultChannel(ctx)) return Number(ctx.channelId);
+    const n = requested ? Number(requested) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** A write on `channelId` is allowed from the default channel, or from that channel itself. */
+function channelAllowed(ctx: RequestContext, channelId: number): boolean {
+    return inDefaultChannel(ctx) || Number(ctx.channelId) === Number(channelId);
+}
+
+function clampDays(v: unknown, fallback: number): number {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n >= 1 ? Math.min(365, n) : fallback;
 }
 
 function fail(res: Response, e: any) {
@@ -45,8 +68,8 @@ export class HuloPaymentsAdminController {
     @Get('dashboard')
     async dashboard(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        const channelId = q.channelId ? Number(q.channelId) : null;
-        const [ledger, subs, methods] = await Promise.all([this.ledger.stats(channelId, Number(q.days) || 30), this.subscriptions.stats(), listHuloMethods(this.connection)]);
+        const channelId = scopedChannel(ctx, q.channelId);
+        const [ledger, subs, methods] = await Promise.all([this.ledger.stats(channelId, clampDays(q.days, 30)), this.subscriptions.stats(), listHuloMethods(this.connection)]);
         return res.json({
             premium: getRuntime().hasPremiumAccess(), ledger, subscriptions: subs,
             providers: allProviders().map(p => ({ code: p.code, name: p.name, freeTier: p.freeTier, capabilities: p.capabilities, configured: methods.some(m => m.handlerCode === p.code && m.enabled) })),
@@ -56,7 +79,7 @@ export class HuloPaymentsAdminController {
     @Get('transactions')
     async transactions(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        return res.json(await this.ledger.list({ channelId: q.channelId ? Number(q.channelId) : null, provider: q.provider, kind: q.kind, status: q.status, orderCode: q.q, days: q.days ? Number(q.days) : undefined, page: Number(q.page) || 1, perPage: Number(q.perPage) || 50 }));
+        return res.json(await this.ledger.list({ channelId: scopedChannel(ctx, q.channelId), provider: q.provider, kind: q.kind, status: q.status, orderCode: q.q, days: q.days ? clampDays(q.days, 30) : undefined, page: Number(q.page) || 1, perPage: Number(q.perPage) || 50 }));
     }
 
     @Get('events')
@@ -68,7 +91,6 @@ export class HuloPaymentsAdminController {
     @Get('providers')
     async providers(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        clearCredentialCache();
         const methods = await listHuloMethods(this.connection);
         const base = getRuntime().publicBaseUrl().replace(/\/$/, '');
         const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel ORDER BY id`).catch(() => []);
@@ -90,16 +112,34 @@ export class HuloPaymentsAdminController {
     async settings(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
         if (denyUnlessAdmin(ctx, res, false)) return;
         const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel ORDER BY id`).catch(() => []);
-        const all = await Promise.all(channels.map(async c => ({ channelCode: c.code, ...(await this.ledger.getSettings(Number(c.id))) })));
-        return res.json(q.channelId ? all.find(s => s.channelId === Number(q.channelId)) || null : all);
+        const visible = inDefaultChannel(ctx) ? channels : channels.filter(c => Number(c.id) === Number(ctx.channelId));
+        const all = await Promise.all(visible.map(async c => ({ channelCode: c.code, ...(await this.ledger.getSettings(Number(c.id))) })));
+        const want = scopedChannel(ctx, q.channelId);
+        return res.json(want ? all.find(s => s.channelId === want) || null : all);
     }
 
     @Post('settings')
     async saveSettings(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
-        if (!body?.channelId) return res.status(400).json({ error: 'channelId required' });
-        try { await this.ledger.saveSettings(body); return res.json({ ok: true, settings: await this.ledger.getSettings(Number(body.channelId)) }); }
-        catch (e) { return fail(res, e); }
+        const channelId = Number.parseInt(String(body?.channelId ?? ''), 10);
+        if (!Number.isInteger(channelId) || channelId < 1) return res.status(400).json({ error: 'channelId required' });
+        if (!channelAllowed(ctx, channelId)) return res.status(403).json({ error: 'forbidden' });
+        // Only known providers, bounded values; the row stores this as JSON, so it is validated here rather than truncated there.
+        const surcharges: Record<string, any> = {};
+        for (const [k, v] of Object.entries<any>(body?.surcharges || {})) {
+            if (!getProvider(k) && !k.startsWith('hulo-')) continue;
+            surcharges[k] = { type: v?.type === 'fixed' ? 'fixed' : 'percent', value: Math.max(0, Math.min(1_000_000, Number(v?.value) || 0)), label: String(v?.label || '').slice(0, 60) };
+        }
+        if (JSON.stringify(surcharges).length > 4000) return res.status(400).json({ error: 'too many surcharge rules' });
+        const logo = String(body?.hostedLogoUrl || '').trim();
+        if (logo && !/^https?:\/\/[^\s]+$/i.test(logo)) return res.status(400).json({ error: 'hostedLogoUrl must be an absolute http(s) URL' });
+        const opsEmail = String(body?.opsEmail || '').trim();
+        if (opsEmail && !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(opsEmail)) return res.status(400).json({ error: 'opsEmail is not an e-mail address' });
+        const providerOrder = (Array.isArray(body?.providerOrder) ? body.providerOrder : []).filter((c: any) => typeof c === 'string' && getProvider(c));
+        try {
+            await this.ledger.saveSettings({ ...body, channelId, surcharges, hostedLogoUrl: logo, opsEmail, providerOrder });
+            return res.json({ ok: true, settings: await this.ledger.getSettings(channelId) });
+        } catch (e) { return fail(res, e); }
     }
 
     @Get('subscriptions')
@@ -157,6 +197,7 @@ export class HuloPaymentsAdminController {
         if (!provider.freeTier && !getRuntime().hasPremiumAccess()) return res.status(402).json({ error: 'licence-required', message: `${provider.name} needs a HULO Payments licence`, buyUrl: 'https://huloglobal.com/vendure-plugins/payments/' });
         try {
             const channelId = Number(body?.channelId) || (ctx.channelId as number);
+            if (!channelAllowed(ctx, channelId)) return res.status(403).json({ error: 'forbidden' });
             const existing = (await listHuloMethods(this.connection, channelId)).find(m => m.handlerCode === code && m.channelIds.includes(channelId));
             let args = this.withDefaults(code, { ...(existing?.args || {}), ...(body?.args || {}) });
             const check = await provider.verifyCredentials(args);
@@ -197,10 +238,12 @@ export class HuloPaymentsAdminController {
         if (!provider) return res.status(404).json({ error: 'unknown provider' });
         try {
             const channelId = Number(body?.channelId) || (ctx.channelId as number);
+            if (!channelAllowed(ctx, channelId)) return res.status(403).json({ error: 'forbidden' });
             const existing = (await listHuloMethods(this.connection, channelId)).find(m => m.handlerCode === code && m.channelIds.includes(channelId));
             if (existing) return res.status(200).json({ ok: true, created: false, method: { id: existing.paymentMethodId, code: existing.paymentMethodCode } });
             const adminCtx = await this.payments.adminCtx(channelId);
-            const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel WHERE id = ?`, [channelId]).catch(() => []);
+            // Through the dialect adapter: a bare `?` placeholder is a syntax error on Postgres.
+            const channels: any[] = await adapterFor(this.connection.rawConnection).query(`SELECT id, code FROM channel WHERE id = ?`, [channelId]).catch(() => []);
             const channelCode = String(channels[0]?.code || '');
             const suffix = channelId > 1 && channelCode ? `-${channelCode.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 20)}` : '';
             const taken = new Set(((await this.connection.rawConnection.query(`SELECT code FROM payment_method`).catch(() => [])) as any[]).map(r => String(r.code)));
@@ -244,7 +287,7 @@ export class HuloPaymentsAdminController {
             const hours = Math.max(1, Math.min(24 * 30, Number(body?.expiresInHours) || 72));
             const link = await provider.createPayLink(resolved!.args, {
                 orderCode: order.code, amount: order.totalWithTax, currency: order.currencyCode, description: `Order ${order.code}`,
-                customerEmail: order.customer?.emailAddress, returnUrl: body?.returnUrl || `${getRuntime().publicBaseUrl()}/checkout/confirmation/${order.code}`,
+                customerEmail: order.customer?.emailAddress, returnUrl: /^https:\/\/[^\s]+$/i.test(String(body?.returnUrl || '')) ? String(body.returnUrl).slice(0, 1000) : `${getRuntime().publicBaseUrl()}/checkout/confirmation/${order.code}`,
                 expiresAt: new Date(Date.now() + hours * 3600_000).toISOString(),
                 lines: (order.lines || []).map(l => ({ name: l.productVariant?.name || 'Item', quantity: l.quantity, amount: l.proratedUnitPriceWithTax ?? l.unitPriceWithTax })),
             });

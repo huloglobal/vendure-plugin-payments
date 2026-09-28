@@ -30,7 +30,7 @@ import { HuloPaymentMethodNameCellComponent } from './components/payment-method-
             icon: 'plugin',
             buttonColor: 'primary',
             buttonStyle: 'outline',
-            requiresPermission: 'UpdateSettings',
+            requiresPermission: 'ReadOrder',
             onClick: (_event, context) => {
                 context.injector.get(Router).navigate(['/extensions/hulo-payments'], { queryParams: { tab: 'methods' } });
             },

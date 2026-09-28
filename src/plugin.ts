@@ -1,5 +1,6 @@
 import { clearCredentialCache } from './core/credentials';
 import { EventBus, PaymentMethodEvent, PluginCommonModule, RuntimeVendureConfig, Type, VendurePlugin, TransactionalConnection } from '@vendure/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import {
     fingerprintPublicKey, Heartbeat, LicenceStatus, RevocationChecker, UpdateChecker, verifyLicence,
     warnIfIncompatibleVendure, EvaluationClient, EvaluationState, LicenceStore, adapterFor,
@@ -54,6 +55,12 @@ export interface HuloPaymentsPluginOptions {
     };
     /** Disable the hourly renewal scheduler (e.g. hosts running it elsewhere). */
     disableScheduler?: boolean;
+    /**
+     * Hosts the hosted checkout page may return the customer to
+     * (`huloHostedCheckout(returnUrl, cancelUrl)`), e.g. `['shop.example.com']`.
+     * Unset = any http(s) URL the storefront asks for.
+     */
+    hostedReturnHosts?: string[];
 }
 
 const HULO_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -73,23 +80,48 @@ export function getOptions(): HuloPaymentsPluginOptions { return cachedOptions; 
 
 for (const p of [stripeProvider, adyenProvider, paypalProvider, mollieProvider, squareProvider, braintreeProvider, gocardlessProvider, checkoutComProvider, coinbaseProvider, bankTransferProvider, payLaterProvider]) registerProvider(p);
 
+/** One pooled SMTP transport with timeouts (nodemailer's defaults are 2 min connect / 10 min socket). */
+let opsTransport: { key: string; t: any } | null = null;
+function opsTransporter(): any {
+    const port = Number(process.env.SMTP_PORT || 587);
+    const key = [process.env.SMTP_SERVER, port, process.env.SMTP_USER, process.env.SMTP_PASSWORD].join('|');
+    if (opsTransport?.key === key) return opsTransport.t;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodemailer = require('nodemailer');
+    try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
+    const t = nodemailer.createTransport({
+        host: process.env.SMTP_SERVER, port, secure: port === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+        pool: true, maxConnections: 2, maxMessages: 100, connectionTimeout: 5_000, greetingTimeout: 5_000, socketTimeout: 10_000,
+    });
+    opsTransport = { key, t };
+    return t;
+}
+
 async function notifyOps(event: { kind: string; subject: string; text: string; orderCode?: string; channelId?: number | null }): Promise<void> {
     const ops = getOptions().ops || {};
     // eslint-disable-next-line no-console
     console.warn(`[${PKG_NAME}] ${event.kind}: ${event.subject} — ${event.text}`);
     if (ops.webhookUrl) {
         try {
-            await (globalThis as any).fetch(ops.webhookUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: `*${event.subject}*\n${event.text}`, kind: event.kind, orderCode: event.orderCode, source: PKG_NAME }) });
-        } catch { /* alerts never break payments */ }
+            const r = await (globalThis as any).fetch(ops.webhookUrl, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ text: `*${event.subject}*\n${event.text}`, kind: event.kind, orderCode: event.orderCode, source: PKG_NAME }),
+                signal: AbortSignal.timeout(5_000),
+            });
+            if (!r?.ok) console.warn(`[${PKG_NAME}] ops webhook answered HTTP ${r?.status}`);
+        } catch (e: any) { console.warn(`[${PKG_NAME}] ops webhook failed: ${e?.message || e}`); }
     }
     if (ops.email && process.env.SMTP_SERVER && process.env.SMTP_USER) {
         try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const nodemailer = require('nodemailer');
-            const port = Number(process.env.SMTP_PORT || 587);
-            const transporter = nodemailer.createTransport({ host: process.env.SMTP_SERVER, port, secure: port === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } });
-            await transporter.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: ops.email, subject: `[Payments] ${event.subject}`, text: event.text });
-        } catch { /* nodemailer missing or SMTP down */ }
+            await Promise.race([
+                opsTransporter().sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: ops.email, subject: `[Payments] ${event.subject}`, text: event.text }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('smtp timeout (12 s)')), 12_000)),
+            ]);
+        } catch (e: any) {
+            try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
+            opsTransport = null;
+            console.warn(`[${PKG_NAME}] ops e-mail failed: ${e?.message || e}`);
+        }
     }
 }
 
@@ -108,7 +140,8 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
  * @category Plugin
  */
 @VendurePlugin({
-    imports: [PluginCommonModule],
+    // ScheduleModule here so the renewal cron fires on hosts that never registered it themselves (Nest de-duplicates the dynamic module).
+    imports: [PluginCommonModule, ScheduleModule.forRoot()],
     controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController],
     providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },

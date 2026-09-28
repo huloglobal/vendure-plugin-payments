@@ -12,11 +12,14 @@ import { catchError } from 'rxjs/operators';
 @Injectable({ providedIn: 'root' })
 export class HuloProvidersCacheService {
     private cached$: Observable<any> | null = null;
+    private at = 0;
+    private static readonly TTL_MS = 60_000;
 
     constructor(private http: HttpClient) {}
 
     providers(): Observable<any> {
-        if (!this.cached$) {
+        if (!this.cached$ || Date.now() - this.at > HuloProvidersCacheService.TTL_MS) {
+            this.at = Date.now();
             const api = `${getServerLocation().replace(/\/$/, '')}/hulo-payments`;
             this.cached$ = this.http.get<any>(`${api}/providers`, this.options()).pipe(catchError(() => of(null)), shareReplay(1));
         }

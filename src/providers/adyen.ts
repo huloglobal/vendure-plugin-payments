@@ -158,7 +158,7 @@ export const adyenProvider: PaymentProvider = {
     async refund(args, paymentRef, amount, currency, reason) {
         const r = await adyen(args, `/payments/${encodeURIComponent(paymentRef)}/refunds`, {
             json: { amount: { value: toProviderMinor(amount, currency), currency }, merchantAccount: args.merchantAccount, reference: `refund-${paymentRef}-${Date.now().toString(36)}`, merchantRefundReason: reason ? String(reason).slice(0, 80) : undefined },
-            idempotencyKey: idem('hulo-ady-ref', paymentRef, amount, Date.now().toString(36).slice(0, 6)),
+            idempotencyKey: idem('hulo-ady-ref', paymentRef, amount, Math.floor(Date.now() / 60_000).toString(36)),
         });
         // Adyen refunds are asynchronous: the REFUND webhook confirms them.
         return { state: 'Pending', transactionId: r.pspReference, metadata: { pspReference: r.pspReference, status: r.status } };
