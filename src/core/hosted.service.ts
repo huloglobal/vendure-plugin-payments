@@ -1,12 +1,14 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { ID, TransactionalConnection } from '@vendure/core';
+import { ID, Logger, TransactionalConnection } from '@vendure/core';
+import { loggerCtx } from './ledger.service';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 
 export interface HostedSession {
     id: number;
     token: string;
-    orderId: number;
+    /** Vendure order id as text: integer or UUID depending on the host's id strategy. */
+    orderId: string;
     orderCode: string;
     channelId: number;
     returnUrl: string;
@@ -55,7 +57,7 @@ export class HostedCheckoutService implements OnModuleInit {
             CREATE TABLE IF NOT EXISTS hulo_hosted_session (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 token VARCHAR(64) NOT NULL,
-                orderId INT NOT NULL,
+                orderId VARCHAR(36) NOT NULL,
                 orderCode VARCHAR(32) NOT NULL,
                 channelId INT NOT NULL,
                 returnUrl VARCHAR(1000) NOT NULL DEFAULT '',
@@ -75,6 +77,23 @@ export class HostedCheckoutService implements OnModuleInit {
             'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS sessionCount INT NOT NULL DEFAULT 0',
         ]) {
             try { await this.db.query(ddl); } catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
+        }
+        await this.widenOrderId();
+    }
+
+    /** 0.2.9: `orderId` was INT, which no host on Vendure's UUID id strategy could use; widen it in place. */
+    private async widenOrderId(): Promise<void> {
+        try {
+            const scope = this.db.dialect === 'postgres' ? 'table_catalog = current_database() AND table_schema = current_schema()' : 'table_schema = DATABASE()';
+            const rows: any[] = await this.db.query(`SELECT data_type AS dt FROM information_schema.columns WHERE ${scope} AND LOWER(table_name) = 'hulo_hosted_session' AND LOWER(column_name) = 'orderid'`);
+            const dt = String(rows?.[0]?.dt ?? rows?.[0]?.DT ?? '').toLowerCase();
+            if (!dt || /char|text/.test(dt)) return;
+            await this.db.query(this.db.dialect === 'postgres'
+                ? `ALTER TABLE hulo_hosted_session ALTER COLUMN orderId TYPE VARCHAR(36) USING orderId::varchar`
+                : `ALTER TABLE hulo_hosted_session MODIFY orderId VARCHAR(36) NOT NULL`);
+            Logger.info('hulo_hosted_session.orderId widened to VARCHAR(36)', loggerCtx);
+        } catch (e: any) {
+            Logger.warn(`could not widen hulo_hosted_session.orderId (run it by hand: ALTER TABLE hulo_hosted_session MODIFY orderId VARCHAR(36) NOT NULL): ${e?.message || e}`, loggerCtx);
         }
     }
 
@@ -104,14 +123,14 @@ export class HostedCheckoutService implements OnModuleInit {
         const expires = new Date(Date.now() + TTL_MS);
         await this.db.query(
             `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, lastMethodCode, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-            [token, Number(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires]);
+            [token, String(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires]);
         return (await this.find(token))!;
     }
 
     async find(token: string): Promise<HostedSession | null> {
         if (!/^[a-f0-9]{48}$/.test(String(token || ''))) return null;
         const [row] = await this.db.query(`SELECT * FROM hulo_hosted_session WHERE token = ?`, [token]);
-        return row ? { ...row, id: Number(row.id), orderId: Number(row.orderId), channelId: Number(row.channelId) } : null;
+        return row ? { ...row, id: Number(row.id), orderId: String(row.orderId), channelId: Number(row.channelId) } : null;
     }
 
     isLive(s: HostedSession): boolean { return !s.completedAt && new Date(s.expiresAt).getTime() > Date.now(); }

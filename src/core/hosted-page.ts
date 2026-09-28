@@ -40,7 +40,8 @@ const ICONS: Record<string, string> = {
     'hulo-paypal': 'PayPal', 'hulo-mollie': 'iDEAL', 'hulo-gocardless': 'Bank', 'hulo-coinbase': '₿', 'hulo-bank-transfer': 'Bank', 'hulo-pay-later': 'Invoice',
 };
 
-export function renderHostedPage(m: HostedPageModel): string {
+/** `nonce` goes on the page's one inline script so a Content-Security-Policy can allow exactly that script. */
+export function renderHostedPage(m: HostedPageModel, nonce = ''): string {
     const providerButtons = m.providers.map(p => `
         <button type="button" class="method" data-method="${esc(p.methodCode)}" data-provider="${esc(p.provider)}">
             <span class="icon">${esc(ICONS[p.provider] || 'Pay')}</span>
@@ -87,7 +88,7 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
     ${m.customerEmail ? `<p class="foot">Receipt to ${esc(m.customerEmail)}</p>` : ''}
   </aside>
 </div>
-<script>
+<script${/^[A-Za-z0-9+/=_-]{1,128}$/.test(nonce) ? ` nonce="${nonce}"` : ''}>
 (function(){
   var TOKEN = ${js(m.token)}, BASE = location.pathname.replace(/\\/$/, ''), AMOUNT_LABEL = ${js(money(m.amount, m.currency, m.locale))};
   var RETURNED = ${m.returned ? 'true' : 'false'};

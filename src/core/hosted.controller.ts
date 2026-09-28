@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Param, Post, Req, Res } from '@nestjs/common';
 import { ChannelService, Logger, Order, OrderService, RequestContext, RequestContextService, TransactionalConnection } from '@vendure/core';
+import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
+import { json as bodyJson } from 'express';
+import { getOptions } from '../plugin';
 import { HostedCheckoutService } from './hosted.service';
 import { PaymentsService } from './payments.service';
 import { LedgerService, loggerCtx } from './ledger.service';
@@ -21,12 +24,73 @@ const METHOD_CODE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const METADATA_KEYS = ['paymentIntentId', 'sessionId', 'sessionResult', 'resultCode', 'paypalOrderId', 'sourceId', 'nonce', 'deviceData', 'molliePaymentId', 'billingRequestId', 'chargeCode', 'token'];
 const MAX_SESSIONS_PER_LINK = 30;
 
-function securityHeaders(res: Response): void {
+/** Hosts the page's provider clients load scripts from, frame, and call. Kept in one place so the CSP and the page agree. */
+const CSP_SCRIPT = ['https://js.stripe.com', 'https://m.stripe.network', 'https://cdn.jsdelivr.net', 'https://*.adyen.com', 'https://www.paypal.com', 'https://*.paypal.com', 'https://*.paypalobjects.com', 'https://web.squarecdn.com', 'https://sandbox.web.squarecdn.com', 'https://*.squareup.com', 'https://*.squareupsandbox.com', 'https://js.braintreegateway.com', 'https://assets.braintreegateway.com', 'https://*.braintree-api.com', 'https://*.braintreegateway.com'];
+const CSP_FRAME = ['https://js.stripe.com', 'https://hooks.stripe.com', 'https://m.stripe.network', 'https://*.adyen.com', 'https://www.paypal.com', 'https://*.paypal.com', 'https://web.squarecdn.com', 'https://sandbox.web.squarecdn.com', 'https://*.squareup.com', 'https://*.squareupsandbox.com', 'https://assets.braintreegateway.com', 'https://*.braintreegateway.com', 'https://*.braintree-api.com'];
+const CSP_CONNECT = ["'self'", 'https://api.stripe.com', 'https://*.stripe.com', 'https://m.stripe.network', 'https://*.adyen.com', 'https://www.paypal.com', 'https://*.paypal.com', 'https://*.squareup.com', 'https://*.squareupsandbox.com', 'https://*.braintree-api.com', 'https://*.braintreegateway.com'];
+const CSP_STYLE = ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net', 'https://*.adyen.com', 'https://assets.braintreegateway.com', 'https://*.squarecdn.com'];
+export const CSP_REPORT_PATH = '/hulo-payments/csp-report';
+
+/** The hosted page's Content-Security-Policy: the inline script by nonce, every provider client by host. */
+export function hostedCsp(nonce: string): string {
+    return [
+        `default-src 'self'`,
+        `script-src 'nonce-${nonce}' ${CSP_SCRIPT.join(' ')}`,
+        `frame-src ${CSP_FRAME.join(' ')}`,
+        `connect-src ${CSP_CONNECT.join(' ')}`,
+        `img-src * data: blob:`,
+        `style-src ${CSP_STYLE.join(' ')}`,
+        `font-src 'self' data: https:`,
+        `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`, `object-src 'none'`,
+        `report-uri ${CSP_REPORT_PATH}`,
+    ].join('; ');
+}
+
+export type HostedCspMode = 'enforce' | 'report-only' | 'off';
+export function hostedCspMode(): HostedCspMode {
+    const m = getOptions().hostedCsp;
+    return m === 'enforce' || m === 'off' ? m : 'report-only';
+}
+
+/** Common headers; with a `nonce` the full provider CSP is added in the configured mode (the minimal one stays enforced otherwise). */
+function securityHeaders(res: Response, nonce?: string): void {
     res.setHeader('cache-control', 'no-store');
-    res.setHeader('content-security-policy', "frame-ancestors 'none'; base-uri 'none'");
+    const mode = hostedCspMode();
+    if (nonce && mode === 'enforce') res.setHeader('content-security-policy', hostedCsp(nonce));
+    else {
+        res.setHeader('content-security-policy', "frame-ancestors 'none'; base-uri 'none'");
+        if (nonce && mode === 'report-only') res.setHeader('content-security-policy-report-only', hostedCsp(nonce));
+    }
     res.setHeader('x-frame-options', 'DENY');
     res.setHeader('referrer-policy', 'same-origin');
     res.setHeader('x-content-type-options', 'nosniff');
+}
+
+/** Browsers post `application/csp-report`, which Vendure's JSON parser does not read; parse it here. */
+export const cspReportBodyMiddleware = { route: CSP_REPORT_PATH, handler: bodyJson({ type: () => true, limit: '32kb' }), beforeListen: true };
+
+const CSP_LOG_PER_MINUTE = 20;
+
+/** CSP violation reports from the hosted page, logged (rate-limited, hosted-page tokens masked) and acknowledged with 204. */
+@Controller('hulo-payments')
+export class CspReportController {
+    private window = { start: 0, n: 0 };
+
+    @Post('csp-report')
+    report(@Req() req: Request, @Res() res: Response) {
+        const now = Date.now();
+        if (now - this.window.start > 60_000) this.window = { start: now, n: 0 };
+        if (++this.window.n <= CSP_LOG_PER_MINUTE) {
+            const body: any = req.body;
+            const reports: any[] = Array.isArray(body) ? body.map(b => b?.body || b) : [body?.['csp-report'] || body?.body || body];
+            for (const r of reports.slice(0, 5)) {
+                if (!r || typeof r !== 'object') continue;
+                const mask = (v: any) => String(v || '?').replace(/\/pay\/[a-f0-9]{48}/g, '/pay/…').slice(0, 300);
+                Logger.warn(`hosted page CSP ${r.disposition || (hostedCspMode() === 'enforce' ? 'enforce' : 'report')}: ${mask(r['violated-directive'] || r['effective-directive'] || r.effectiveDirective)} blocked ${mask(r['blocked-uri'] || r.blockedURL)} on ${mask(r['document-uri'] || r.documentURL)}`, loggerCtx);
+            }
+        }
+        return res.status(204).end();
+    }
 }
 
 @Controller('hulo-payments/pay')
@@ -64,17 +128,14 @@ export class HostedCheckoutController {
         const loaded = await this.load(token);
         if (!loaded) return res.status(404).type('html').send(this.gone('This payment link is not valid.'));
         const { s, ctx, order } = loaded;
-        securityHeaders(res);
+        const nonce = randomBytes(16).toString('base64');
+        securityHeaders(res, nonce);
         const paid = PAID_STATES.includes(order.state);
         if (paid) return res.redirect(302, this.returnUrl(s.returnUrl, order.code, 'paid'));
         if (!this.hosted.isLive(s)) return res.status(410).type('html').send(this.gone('This payment link has expired. Please go back to the shop and try again.'));
-        if (order.state !== 'ArrangingPayment') {
-            const t: any = await this.connection.withTransaction(ctx, tctx => this.orderService.transitionToState(tctx, order.id, 'ArrangingPayment'));
-            if (t?.errorCode) {
-                Logger.warn(`hosted page: ${order.code} cannot enter ArrangingPayment: ${t.message || t.errorCode}`, loggerCtx);
-                return res.status(409).type('html').send(this.gone('This order cannot take a payment right now. Please go back to the shop and try again.'));
-            }
-        }
+        // Read-only: link previews and crawlers fetch this URL, and an order frozen in ArrangingPayment
+        // by a bot can no longer be edited in the storefront. The first real interaction (`/session`)
+        // moves the order; an AddingItems order still lists its providers here.
         let providers: any[] = [];
         try { providers = await this.payments.offeredProviders(ctx, order); } catch (e: any) { Logger.warn(`hosted page: providers failed for ${order.code}: ${e.message}`, loggerCtx); }
         const channelCode = (order.channels || []).find((c: any) => c.code !== '__default_channel__')?.code || order.channels?.[0]?.code || '__default_channel__';
@@ -85,7 +146,7 @@ export class HostedCheckoutController {
             returned: !!(req.query && Object.keys(req.query).length),
             preselect: s.lastMethodCode || '',
             lines: (order.lines || []).map(l => ({ name: l.productVariant?.name || 'Item', quantity: l.quantity, total: l.proratedLinePriceWithTax ?? l.linePriceWithTax })),
-        });
+        }, nonce);
         return res.type('html').send(html);
     }
 
@@ -96,6 +157,16 @@ export class HostedCheckoutController {
         const { s, ctx, order } = loaded;
         const methodCode = String(body?.methodCode || '');
         if (!METHOD_CODE_RE.test(methodCode)) return res.status(400).json({ error: 'session', message: 'Choose a payment method first.' });
+        if (PAID_STATES.includes(order.state)) return res.status(409).json({ error: 'paid', message: 'This order is already paid.', redirect: this.returnUrl(s.returnUrl, order.code, 'paid') });
+        // The customer chose a method: this is where the order enters ArrangingPayment (never on the GET).
+        if (order.state !== 'ArrangingPayment') {
+            const t: any = await this.connection.withTransaction(ctx, tctx => this.orderService.transitionToState(tctx, order.id, 'ArrangingPayment'));
+            if (t?.errorCode) {
+                Logger.warn(`hosted session: ${order.code} cannot enter ArrangingPayment: ${t.message || t.errorCode}`, loggerCtx);
+                return res.status(409).json({ error: 'state', message: 'This order cannot take a payment right now. Please go back to the shop and try again.' });
+            }
+            order.state = 'ArrangingPayment';
+        }
         // One link, a bounded number of provider sessions: each call creates a PaymentIntent / session at the provider.
         if ((await this.hosted.bumpSessionCount(token)) > MAX_SESSIONS_PER_LINK) {
             return res.status(429).json({ error: 'too_many', message: 'Too many attempts on this payment link. Please go back to the shop and start again.' });

@@ -69,6 +69,7 @@ plugins: [
     licenceKey: process.env.HULO_LICENCE_KEY_PAYMENTS, // optional — or activate in the admin
     ops: { email: 'ops@example.com', webhookUrl: process.env.OPS_SLACK_WEBHOOK },
     hostedReturnHosts: ['shop.example.com'],          // optional: hosts the hosted checkout may return to
+    hostedCsp: 'report-only',                         // optional: Content-Security-Policy on the hosted page ('enforce' | 'report-only' | 'off')
   }),
   AdminUiPlugin.init({
     app: compileUiExtensions({ extensions: [HuloPaymentsPlugin.uiExtensions /* … */] }),
@@ -90,6 +91,9 @@ the handler *HULO Payments — Stripe / Adyen / PayPal / Mollie*; every field
 explains where to find its value. Tables are created on boot; the only
 migration is Vendure's own for the three subscription custom fields on
 `ProductVariant` (`npx vendure migrate` on installs that use migrations).
+Hosts on Vendure's UUID id strategy are supported: `hulo_hosted_session.orderId`
+is text (installs from before 0.2.9 are widened on boot; if that ALTER is
+refused the log names the statement to run by hand).
 
 ## Storefront
 
@@ -100,6 +104,24 @@ mutation { huloHostedCheckout(returnUrl: "https://shop.example.com/checkout/retu
 # methodCode is optional: it preselects that method on the page (one button per provider in your checkout).
 # → redirect the customer to `url`; they return to returnUrl?order=CODE&result=paid|pending
 ```
+
+Opening the link is read-only: crawlers and chat link-previews fetching it
+leave the basket editable. The order enters `ArrangingPayment` when the
+customer picks a method (the page's first `/session` call).
+
+**Content-Security-Policy.** The page carries a CSP that allows its own
+script by a per-request nonce and every provider client by host (Stripe,
+Adyen via jsDelivr, PayPal, Square, Braintree), with `frame-ancestors
+'none'`, `base-uri 'none'` and `form-action 'self'`. `hostedCsp` picks the
+mode: `'report-only'` (default) sends `Content-Security-Policy-Report-Only`
+and logs what a browser *would* have blocked (browsers post reports to
+`POST /hulo-payments/csp-report`, answered 204, logged at most 20 times a
+minute with page tokens masked); `'enforce'` blocks it; `'off'` keeps only
+the frame-ancestors / base-uri policy. Run report-only for a while, and once
+the server log shows no `hosted page CSP` warnings for the providers you
+offer, switch to `'enforce'`. The Stripe flow is verified under `'enforce'`
+on every release; a provider that loads a host not on the list would show
+up in report-only mode first.
 
 For an embedded checkout, drive the providers yourself:
 
@@ -162,7 +184,7 @@ banner. Details and pricing: https://huloglobal.com/vendure-plugins/payments/
 
 ## Webhook events handled
 
-Stripe `payment_intent.succeeded / amount_capturable_updated / payment_failed / canceled`, `charge.refunded`, `charge.refund.updated`, `charge.dispute.created / closed`, `checkout.session.completed`, `invoice.paid / payment_failed`, `customer.subscription.updated / deleted / paused`.
+Stripe `payment_intent.succeeded / amount_capturable_updated / payment_failed / canceled`, `charge.refunded`, `charge.refund.updated`, `refund.updated`, `charge.dispute.created / closed`, `checkout.session.completed`, `invoice.paid / payment_failed`, `customer.subscription.updated / deleted / paused`.
 Adyen `AUTHORISATION`, `CAPTURE`, `CAPTURE_FAILED`, `CANCELLATION`, `REFUND`, `REFUND_FAILED`, `CHARGEBACK`, `NOTIFICATION_OF_CHARGEBACK`, `CHARGEBACK_REVERSED`, `RECURRING_CONTRACT`.
 PayPal `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.*`, `PAYMENT.AUTHORIZATION.*`, `CUSTOMER.DISPUTE.*`, `BILLING.SUBSCRIPTION.*`, `PAYMENT.SALE.COMPLETED`.
 Mollie: every payment webhook (status, refunds, chargebacks, subscription payments).

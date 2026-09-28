@@ -264,7 +264,7 @@ export class SubscriptionService implements OnModuleInit {
         const provider = getProvider(sub.provider);
         const method = await resolveMethod(this.connection, sub.provider, sub.channelId || undefined);
         if (provider?.cancelSubscription && method && !sub.selfScheduled && !sub.providerSubscriptionRef.startsWith('hulo-')) {
-            const r = await provider.cancelSubscription(method.args, sub.providerSubscriptionRef, atPeriodEnd);
+            const r = await provider.cancelSubscription(method.args, sub.providerSubscriptionRef, atPeriodEnd, sub.providerCustomerRef || undefined);
             await this.update(id, atPeriodEnd && r.status !== 'canceled' ? { cancelAtPeriodEnd: 1 } : { status: 'canceled', cancelAtPeriodEnd: 0 });
         } else {
             await this.update(id, atPeriodEnd ? { cancelAtPeriodEnd: 1 } : { status: 'canceled', cancelAtPeriodEnd: 0, nextChargeAt: null });
@@ -358,7 +358,7 @@ export class SubscriptionService implements OnModuleInit {
             const provider = getProvider(sub.provider);
             const method = await resolveMethod(this.connection, sub.provider, sub.channelId || undefined);
             try {
-                if (provider?.cancelSubscription && method && !sub.selfScheduled && !sub.providerSubscriptionRef.startsWith('hulo-')) await provider.cancelSubscription(method.args, sub.providerSubscriptionRef, false);
+                if (provider?.cancelSubscription && method && !sub.selfScheduled && !sub.providerSubscriptionRef.startsWith('hulo-')) await provider.cancelSubscription(method.args, sub.providerSubscriptionRef, false, sub.providerCustomerRef || undefined);
                 await this.update(sub.id, { status: 'canceled', cancelAtPeriodEnd: 0, nextChargeAt: null });
                 out.canceled++;
             } catch (e: any) { Logger.warn(`period-end cancel failed for subscription ${sub.id}: ${e.message}`, loggerCtx); }

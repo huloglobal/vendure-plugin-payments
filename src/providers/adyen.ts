@@ -111,10 +111,7 @@ export const adyenProvider: PaymentProvider = {
             storePaymentMethod: recurring || undefined,
             recurringProcessingModel: recurring ? 'Subscription' : undefined,
             shopperInteraction: 'Ecommerce',
-            lineItems: (order.lines || []).slice(0, 50).map(l => ({
-                id: String(l.id), description: l.productVariant?.name?.slice(0, 120), quantity: l.quantity,
-                amountIncludingTax: toProviderMinor(l.proratedUnitPriceWithTax ?? l.unitPriceWithTax, order.currencyCode),
-            })),
+            lineItems: adyenLineItems(order),
         };
         const s = await adyen(args, '/sessions', { json, idempotencyKey: idem('hulo-ady-session', order.code, json.amount.value, order.currencyCode, recurring ? 'r' : '') });
         return {
@@ -124,14 +121,32 @@ export const adyenProvider: PaymentProvider = {
         };
     },
 
-    /** Drop-in hands back `sessionId` + `sessionResult`; the session status is verified with Adyen. */
+    /**
+     * Drop-in hands back `sessionId` + `sessionResult`; the session status is verified with Adyen.
+     * A pay-by-link has no session: its AUTHORISATION / CAPTURE notification (HMAC-verified, and
+     * registered by the webhook path — the handler strips any client-supplied `pspReference`) is
+     * the confirmation, so the payment is recorded against the pspReference it carries.
+     */
     async confirmPayment(_ctx, order, args, metadata): Promise<PaymentOutcome> {
         const sessionId = String(metadata?.sessionId || '');
         const sessionResult = String(metadata?.sessionResult || '');
-        if (!sessionId || !sessionResult) return { state: 'Error', amount: 0, errorMessage: 'Missing sessionId / sessionResult from Adyen Drop-in' };
+        const captureMode = args.captureMode === 'manual' ? 'manual' : 'immediate';
+        if (!sessionId || !sessionResult) {
+            const facts = metadata?.webhook;
+            const pspReference = facts && metadata?.pspReference ? String(metadata.pspReference) : '';
+            if (!pspReference) return { state: 'Error', amount: 0, errorMessage: 'Missing sessionId / sessionResult from Adyen Drop-in (a pay-by-link payment is confirmed by its AUTHORISATION / CAPTURE notification)' };
+            if (facts.currency && facts.currency !== order.currencyCode) return { state: 'Error', amount: 0, transactionId: pspReference, errorMessage: 'Currency mismatch' };
+            if (facts.amount != null && facts.amount !== order.totalWithTax) return { state: 'Error', amount: 0, transactionId: pspReference, errorMessage: `Amount mismatch (notification ${facts.amount}, order ${order.totalWithTax})` };
+            const settled = facts.type === 'payment.settled' || facts.type === 'paylink.completed';
+            return {
+                state: settled ? 'Settled' : 'Authorized', amount: order.totalWithTax, transactionId: pspReference,
+                metadata: { pspReference, captureMode, viaWebhook: facts.type, public: { method: 'adyen' } },
+            };
+        }
         const s = await adyen(args, `/sessions/${encodeURIComponent(sessionId)}?sessionResult=${encodeURIComponent(sessionResult)}`);
         const status = String(s.status || '');
-        const meta = { sessionId, sessionStatus: status, captureMode: args.captureMode === 'manual' ? 'manual' : 'immediate', public: { method: metadata?.paymentMethodType || 'adyen' } };
+        // sessionResult is kept so the handler's settle-time re-probe can ask Adyen for the session status again.
+        const meta = { sessionId, sessionResult, sessionStatus: status, captureMode, public: { method: metadata?.paymentMethodType || 'adyen' } };
         if (status === 'completed') {
             // pspReference + amount arrive on the AUTHORISATION webhook; until
             // then the payment is Authorized against the session.
@@ -240,6 +255,26 @@ export const adyenProvider: PaymentProvider = {
     },
 };
 
+/**
+ * Line items for a session. Klarna, Afterpay and the other pay-later
+ * methods reject a session whose lines do not add up to the amount, so
+ * shipping, surcharges and rounding go on one closing line.
+ */
+export function adyenLineItems(order: Order): Array<{ id: string; description?: string; quantity: number; amountIncludingTax: number }> {
+    const cur = order.currencyCode;
+    const lines = (order.lines || []).slice(0, 50).map(l => ({
+        id: String(l.id), description: l.productVariant?.name?.slice(0, 120), quantity: Number(l.quantity) || 1,
+        amountIncludingTax: toProviderMinor(l.proratedUnitPriceWithTax ?? l.unitPriceWithTax, cur),
+    }));
+    const total = toProviderMinor(order.totalWithTax, cur);
+    const rest = total - lines.reduce((n, l) => n + l.amountIncludingTax * l.quantity, 0);
+    if (rest > 0) lines.push({ id: 'shipping-fees', description: 'Shipping & fees', quantity: 1, amountIncludingTax: rest });
+    return lines;
+}
+
+/** Merchant references the renewal scheduler uses (`<orderCode>-R<yyyymmdd>-<variantId>-a<attempt>`). */
+export const ADYEN_RENEWAL_REF = /^[A-Za-z0-9_-]+-R\d{8}-\d+-a\d+$/;
+
 export function adyenSigningString(it: any): string {
     return [it.pspReference, it.originalReference, it.merchantAccountCode, it.merchantReference, it.amount?.value, it.amount?.currency, it.eventCode, it.success]
         .map(v => (v === undefined || v === null ? '' : String(v))).join(':');
@@ -258,14 +293,18 @@ export function normaliseAdyenItem(it: any): NormalisedEvent {
     const ok = String(it.success) === 'true';
     const base = { id: `${it.eventCode}:${it.pspReference}:${it.success}`, orderCode: it.merchantReference, paymentRef: it.pspReference, amount, currency: cur, raw: it, reason: it.reason || undefined };
     const token = it.additionalData?.['recurring.recurringDetailReference'] || it.additionalData?.storedPaymentMethodId;
+    // A renewal charged by the scheduler is already in the ledger (`renewal` row); its AUTHORISATION /
+    // CAPTURE notification must not land as a second `capture` row against a made-up order code.
+    const renewal = ADYEN_RENEWAL_REF.test(String(it.merchantReference || ''));
     switch (it.eventCode) {
         case 'AUTHORISATION':
+            if (renewal) return { ...base, type: 'ignored' };
             return { ...base, type: ok ? 'payment.authorized' : 'payment.failed', subscription: token ? { paymentRef: token, customerRef: it.additionalData?.['recurring.shopperReference'] || it.additionalData?.shopperReference } : undefined };
-        case 'CAPTURE': return { ...base, type: ok ? 'payment.settled' : 'payment.failed', paymentRef: it.originalReference || it.pspReference };
+        case 'CAPTURE': return { ...base, type: renewal ? 'ignored' : ok ? 'payment.settled' : 'payment.failed', paymentRef: it.originalReference || it.pspReference };
         case 'CAPTURE_FAILED': return { ...base, type: 'payment.failed', paymentRef: it.originalReference || it.pspReference };
         case 'CANCELLATION': return { ...base, type: ok ? 'payment.canceled' : 'ignored', paymentRef: it.originalReference || it.pspReference };
-        case 'REFUND': return { ...base, type: ok ? 'refund.settled' : 'refund.failed', paymentRef: it.originalReference || it.pspReference };
-        case 'REFUND_FAILED': case 'REFUNDED_REVERSED': return { ...base, type: 'refund.failed', paymentRef: it.originalReference || it.pspReference };
+        case 'REFUND': return { ...base, type: ok ? 'refund.settled' : 'refund.failed', paymentRef: it.originalReference || it.pspReference, refundRef: it.pspReference, refundAmount: amount };
+        case 'REFUND_FAILED': case 'REFUNDED_REVERSED': return { ...base, type: 'refund.failed', paymentRef: it.originalReference || it.pspReference, refundRef: it.pspReference, refundAmount: amount };
         case 'CHARGEBACK': case 'NOTIFICATION_OF_CHARGEBACK': case 'REQUEST_FOR_INFORMATION': case 'SECOND_CHARGEBACK':
             return { ...base, type: 'dispute.opened', paymentRef: it.originalReference || it.pspReference };
         case 'CHARGEBACK_REVERSED': return { ...base, type: 'dispute.closed', paymentRef: it.originalReference || it.pspReference, reason: 'reversed' };

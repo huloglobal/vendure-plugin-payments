@@ -12,7 +12,7 @@ import { LedgerService } from './core/ledger.service';
 import { PaymentsService } from './core/payments.service';
 import { WebhookController, webhookRawBodyMiddleware } from './core/webhook.controller';
 import { HuloPaymentsAdminController } from './core/admin.controller';
-import { HostedCheckoutController } from './core/hosted.controller';
+import { CspReportController, HostedCheckoutController, cspReportBodyMiddleware } from './core/hosted.controller';
 import { HostedCheckoutService } from './core/hosted.service';
 import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
@@ -61,6 +61,14 @@ export interface HuloPaymentsPluginOptions {
      * Unset = any http(s) URL the storefront asks for.
      */
     hostedReturnHosts?: string[];
+    /**
+     * Content-Security-Policy on the hosted checkout page. The policy allows the page's own
+     * script by nonce and every provider client (Stripe, Adyen, PayPal, Square, Braintree) by
+     * host. `'report-only'` (default) sends it as `Content-Security-Policy-Report-Only` and logs
+     * violations posted to `/hulo-payments/csp-report`; `'enforce'` blocks them; `'off'` keeps
+     * only `frame-ancestors 'none'; base-uri 'none'`.
+     */
+    hostedCsp?: 'enforce' | 'report-only' | 'off';
 }
 
 const HULO_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -142,7 +150,7 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
 @VendurePlugin({
     // ScheduleModule here so the renewal cron fires on hosts that never registered it themselves (Nest de-duplicates the dynamic module).
     imports: [PluginCommonModule, ScheduleModule.forRoot()],
-    controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController],
+    controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController, CspReportController],
     providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },
     compatibility: '>=3.5.0 <4.0.0',
@@ -155,7 +163,7 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
         if (!checkers.some(c => c.code === huloPaymentRulesChecker.code)) checkers.push(huloPaymentRulesChecker);
         config.paymentOptions.paymentMethodEligibilityCheckers = checkers;
         registerSubscriptionCustomFields(config);
-        config.apiOptions.middleware = [...(config.apiOptions.middleware || []), webhookRawBodyMiddleware];
+        config.apiOptions.middleware = [...(config.apiOptions.middleware || []), webhookRawBodyMiddleware, cspReportBodyMiddleware];
         return config;
     },
 })

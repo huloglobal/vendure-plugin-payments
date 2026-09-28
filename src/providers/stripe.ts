@@ -72,7 +72,7 @@ export const stripeProvider: PaymentProvider = {
     },
 
     async ensureWebhook(args, url): Promise<WebhookSetup> {
-        const events = ['payment_intent.succeeded', 'payment_intent.amount_capturable_updated', 'payment_intent.payment_failed', 'payment_intent.canceled', 'charge.refunded', 'charge.refund.updated', 'charge.dispute.created', 'charge.dispute.closed', 'checkout.session.completed', 'invoice.paid', 'invoice.payment_failed', 'customer.subscription.updated', 'customer.subscription.deleted', 'customer.subscription.paused'];
+        const events = ['payment_intent.succeeded', 'payment_intent.amount_capturable_updated', 'payment_intent.payment_failed', 'payment_intent.canceled', 'charge.refunded', 'charge.refund.updated', 'refund.updated', 'charge.dispute.created', 'charge.dispute.closed', 'checkout.session.completed', 'invoice.paid', 'invoice.payment_failed', 'customer.subscription.updated', 'customer.subscription.deleted', 'customer.subscription.paused'];
         const list = await stripe(args, '/webhook_endpoints?limit=100');
         // A secret can only be read at creation, so an existing endpoint for our URL is replaced.
         for (const ep of (list.data || []).filter((e: any) => e.url === url)) {
@@ -254,7 +254,8 @@ export const stripeProvider: PaymentProvider = {
             const pi = await stripe(args, '/payment_intents', {
                 form: {
                     amount: toProviderMinor(input.amount, input.currency), currency: input.currency.toLowerCase(), customer: input.customerRef,
-                    payment_method: input.paymentRef, off_session: true, confirm: true, description: input.description, metadata: { reference: input.reference },
+                    // huloRenewal marks the intent so its webhooks are ignored: the scheduler writes the `renewal` ledger row itself.
+                    payment_method: input.paymentRef, off_session: true, confirm: true, description: input.description, metadata: { reference: input.reference, huloRenewal: '1' },
                 },
                 idempotencyKey: idem('hulo-renew', input.reference),
             });
@@ -296,6 +297,9 @@ export function normaliseStripeEvent(ev: any): NormalisedEvent {
     // this plugin belongs to another integration sharing the account (Vendure's StripePlugin, Checkout Guard…).
     const md = o.metadata || {};
     const foreign = !md.vendureOrderId && !md.huloPayLink && !!(md.orderCode || md.orderId);
+    // Renewal charges made by the scheduler (`chargeStored`) have no order: the scheduler already wrote
+    // the `renewal` ledger row, so their intent events would only add a second `capture` row.
+    if (md.huloRenewal === '1' && /^payment_intent\./.test(String(ev?.type || ''))) return { ...base, type: 'ignored' };
     switch (ev?.type) {
         case 'payment_intent.succeeded':
             return { ...base, foreign, type: 'payment.settled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount_received ?? o.amount), currency: cur };
@@ -305,10 +309,19 @@ export function normaliseStripeEvent(ev: any): NormalisedEvent {
             return { ...base, foreign, type: 'payment.failed', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur, reason: o.last_payment_error?.message || o.last_payment_error?.decline_code };
         case 'payment_intent.canceled':
             return { ...base, foreign, type: 'payment.canceled', orderCode: o.metadata?.orderCode, paymentRef: o.id, amount: money(o.amount), currency: cur };
-        case 'charge.refunded':
-            return { ...base, foreign, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(o.amount_refunded), currency: cur };
+        case 'charge.refunded': {
+            // `amount_refunded` is cumulative; the specific refund is the newest succeeded entry of the
+            // charge's refund list (present when the endpoint's API version still embeds it).
+            const latest = ((o.refunds?.data || []) as any[]).filter(r => r?.status === 'succeeded').sort((a, b) => Number(b.created || 0) - Number(a.created || 0))[0];
+            return { ...base, foreign, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(latest?.amount ?? o.amount_refunded), currency: cur, refundRef: latest?.id, refundAmount: money(latest?.amount) };
+        }
         case 'charge.refund.updated':
-            return { ...base, type: o.status === 'failed' ? 'refund.failed' : 'ignored', paymentRef: o.payment_intent, amount: money(o.amount), currency: cur, reason: o.failure_reason };
+        case 'refund.updated':
+        case 'refund.created': {
+            // The refund object itself: `re_…` is what the plugin stored as the Vendure refund's transactionId.
+            const type = o.status === 'failed' || o.status === 'canceled' ? 'refund.failed' : o.status === 'succeeded' ? 'refund.settled' : 'ignored';
+            return { ...base, type, paymentRef: o.payment_intent, amount: money(o.amount), currency: cur, reason: o.failure_reason, refundRef: o.id, refundAmount: money(o.amount) };
+        }
         case 'charge.dispute.created':
             return { ...base, type: 'dispute.opened', paymentRef: o.payment_intent, amount: money(o.amount), currency: cur, reason: o.reason };
         case 'charge.dispute.closed':

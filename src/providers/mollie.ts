@@ -167,9 +167,10 @@ export const mollieProvider: PaymentProvider = {
         return { providerSubscriptionRef: s.id, status: s.status === 'active' ? 'active' : 'pending', currentPeriodEnd: start.toISOString(), providerCustomerRef: customer, providerPaymentRef: mandate };
     },
 
-    async cancelSubscription(args, ref, atPeriodEnd) {
+    /** Mollie subscriptions live under their customer: the stored `providerCustomerRef` saves listing every subscription to find it. */
+    async cancelSubscription(args, ref, atPeriodEnd, customerRef) {
         if (atPeriodEnd) return { status: 'active' }; // scheduler cancels at currentPeriodEnd
-        const customer = await findSubscriptionCustomer(args, ref);
+        const customer = (customerRef && /^cst_[A-Za-z0-9]+$/.test(customerRef) ? customerRef : null) || await findSubscriptionCustomer(args, ref);
         if (customer) await mollie(args, `/customers/${customer}/subscriptions/${ref}`, { method: 'DELETE' });
         return { status: 'canceled' };
     },

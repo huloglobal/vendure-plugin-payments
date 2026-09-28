@@ -10,9 +10,39 @@ import { getRuntime } from './runtime';
 let ledger: LedgerService | null = null;
 
 /** Payment ids a verified webhook has already confirmed as settled; the
- *  handler's settle step trusts these instead of re-capturing. */
-const confirmedByWebhook = new Set<string>();
-export function markSettledByWebhook(paymentId: string | number): void { confirmedByWebhook.add(String(paymentId)); }
+ *  handler's settle step trusts these instead of re-capturing. Entries live
+ *  60 s at most and the webhook path clears its own entry in a `finally`. */
+const WEBHOOK_MARK_TTL_MS = 60_000;
+const confirmedByWebhook = new Map<string, number>();
+export function markSettledByWebhook(paymentId: string | number): void { confirmedByWebhook.set(String(paymentId), Date.now() + WEBHOOK_MARK_TTL_MS); }
+export function clearSettledByWebhook(paymentId: string | number): void { confirmedByWebhook.delete(String(paymentId)); }
+function takeSettledByWebhook(paymentId: string | number): boolean {
+    const key = String(paymentId);
+    const until = confirmedByWebhook.get(key);
+    confirmedByWebhook.delete(key);
+    return until !== undefined && until > Date.now();
+}
+
+/**
+ * Payments a verified webhook is about to record with `addPaymentToOrder`
+ * (pay-by-link completions). The handler only lets a provider trust
+ * `metadata.pspReference` when the (order, reference) pair was registered
+ * here by the webhook path, so a storefront cannot forge one through the
+ * public `addPaymentToOrder` mutation.
+ */
+export interface WebhookPaymentFacts { paymentRef: string; type: string; amount?: number; currency?: string }
+const webhookPayments = new Map<string, { facts: WebhookPaymentFacts; until: number }>();
+export function registerWebhookPayment(orderCode: string, facts: WebhookPaymentFacts): void {
+    for (const [k, v] of webhookPayments) if (v.until <= Date.now()) webhookPayments.delete(k);
+    webhookPayments.set(`${orderCode}|${facts.paymentRef}`, { facts, until: Date.now() + WEBHOOK_MARK_TTL_MS });
+}
+export function takeWebhookPayment(orderCode: string, paymentRef: string | undefined): WebhookPaymentFacts | null {
+    if (!paymentRef) return null;
+    const key = `${orderCode}|${paymentRef}`;
+    const hit = webhookPayments.get(key);
+    webhookPayments.delete(key);
+    return hit && hit.until > Date.now() ? hit.facts : null;
+}
 
 const label = (v: string) => [{ languageCode: LanguageCode.en, value: v }];
 const secret = (l: string, d?: string) => ({ type: 'string' as const, label: label(l), description: d ? label(d) : undefined, ui: { component: 'password-form-input' } });
@@ -154,9 +184,15 @@ export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
             if (!provider.freeTier && !getRuntime().hasPremiumAccess()) {
                 return { amount, state: 'Error', errorMessage: `${provider.name} needs a HULO Payments licence`, metadata };
             }
+            // `pspReference` (and the facts under `webhook`) are only trusted when the webhook path
+            // registered them for this order a moment ago; anything a client sends under those keys is dropped.
+            const md: Record<string, any> = { ...(metadata || {}) };
+            delete md.webhook;
+            const facts = takeWebhookPayment(order.code, md.pspReference);
+            if (facts) md.webhook = facts; else delete md.pspReference;
             let outcome;
             try {
-                outcome = await provider.confirmPayment(ctx, order, args as ProviderArgs, metadata || {});
+                outcome = await provider.confirmPayment(ctx, order, args as ProviderArgs, md);
             } catch (e: any) {
                 Logger.error(`${provider.code} confirmPayment failed for ${order.code}: ${e.message}`, loggerCtx);
                 await ledger?.record({ channelId: ctx.channelId as number, provider: provider.code, kind: 'failure', status: 'failed', orderId: order.id as number, orderCode: order.code, amount, currency: order.currencyCode, reason: e.message });
@@ -174,8 +210,7 @@ export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
 
         async settlePayment(ctx, order, payment, args): Promise<SettlePaymentResult | SettlePaymentErrorResult> {
             const meta: any = payment.metadata || {};
-            if (confirmedByWebhook.has(String(payment.id))) {
-                confirmedByWebhook.delete(String(payment.id));
+            if (takeSettledByWebhook(payment.id)) {
                 await ledger?.record({ channelId: ctx.channelId as number, provider: provider.code, kind: 'capture', status: 'ok', orderId: order.id as number, orderCode: order.code, paymentRef: payment.transactionId, amount: payment.amount, currency: order.currencyCode, meta: { via: 'webhook' } });
                 return { success: true };
             }

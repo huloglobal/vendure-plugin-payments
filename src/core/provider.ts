@@ -109,6 +109,10 @@ export interface NormalisedEvent {
     foreign?: boolean;
     /** Provider payment reference (PaymentIntent id, pspReference, capture id, Mollie payment id). */
     paymentRef?: string;
+    /** Refund events: the provider's id of the specific refund, when the event carries one (Stripe `re_…`, Adyen refund pspReference). */
+    refundRef?: string;
+    /** Refund events: the amount of that specific refund in Vendure minor units (Stripe's `amount_refunded` is cumulative). */
+    refundAmount?: number;
     /** Provider subscription reference where relevant. */
     subscriptionRef?: string;
     amount?: number;
@@ -234,7 +238,8 @@ export interface PaymentProvider {
     /** Create (or reuse) the provider-side plan/price for a variant; returns its reference. */
     ensurePlan?(args: ProviderArgs, plan: SubscriptionPlanInput): Promise<string>;
     createSubscription?(args: ProviderArgs, input: SubscriptionCreateInput): Promise<SubscriptionOutcome>;
-    cancelSubscription?(args: ProviderArgs, providerSubscriptionRef: string, atPeriodEnd: boolean): Promise<{ status: SubscriptionOutcome['status']; currentPeriodEnd?: string }>;
+    /** `providerCustomerRef` is the customer the subscription was created under, when the plugin stored one. */
+    cancelSubscription?(args: ProviderArgs, providerSubscriptionRef: string, atPeriodEnd: boolean, providerCustomerRef?: string): Promise<{ status: SubscriptionOutcome['status']; currentPeriodEnd?: string }>;
     pauseSubscription?(args: ProviderArgs, providerSubscriptionRef: string, resume: boolean): Promise<{ status: SubscriptionOutcome['status'] }>;
     /** Charge a stored token for a self-scheduled renewal. */
     chargeStored?(args: ProviderArgs, input: { customerRef: string; paymentRef: string; amount: number; currency: string; reference: string; description: string }): Promise<PaymentOutcome>;

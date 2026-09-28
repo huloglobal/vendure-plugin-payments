@@ -5,6 +5,73 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] — 2026-09-28
+
+Follow-up to the 0.2.8 audit — no new features. One column type change on
+`hulo_hosted_session` is applied on boot; nothing else to migrate.
+
+### Added
+- **Content-Security-Policy on the hosted page.** A per-request nonce on
+  the page's inline script and a policy listing every provider client host
+  (Stripe, Adyen via jsDelivr, PayPal, Square, Braintree) for `script-src`,
+  `frame-src` and `connect-src`, with `img-src * data:`, `style-src 'self'
+  'unsafe-inline'`, `frame-ancestors 'none'`, `base-uri 'none'`,
+  `form-action 'self'`. New plugin option `hostedCsp: 'enforce' |
+  'report-only' | 'off'` (default `'report-only'`: the policy is sent as
+  `Content-Security-Policy-Report-Only` and violations posted to the new
+  `POST /hulo-payments/csp-report` route are logged, rate-limited, tokens
+  masked). The Stripe hosted flow was verified under `'enforce'` in a real
+  browser (Payment Element mounted, session created, zero violations).
+- **Postgres corpus test** (`src/pg-corpus.test.ts`, runs when
+  `HULO_PG_URL` is set): every SQL statement in `src/**` is translated by
+  the licence-sdk adapter and prepared against a scratch PostgreSQL 17 with
+  quoted-camelCase stand-ins for the Vendure tables the plugin reads.
+  66 statements pass.
+
+### Changed
+- Unit test files are no longer compiled into `dist` (they were published
+  with the package before).
+
+### Fixed
+- **Adyen pay-by-link never recorded a payment.** `confirmPayment` insisted
+  on a Drop-in `sessionId` + `sessionResult`, which a payment link does not
+  have. The AUTHORISATION / CAPTURE notification now confirms the payment
+  (Authorized or Settled per the event, `transactionId` = pspReference,
+  amount and currency checked against the order). The facts are registered
+  by the webhook path and consumed once by the handler, so a storefront
+  cannot forge a `pspReference` through `addPaymentToOrder`.
+- **Adyen manual capture from the order page** could not re-check the
+  session: `sessionResult` is now kept in the payment metadata.
+- **Webhook settle mark** (`markSettledByWebhook`) is a map with a 60 s
+  TTL and is cleared in a `finally` around `settlePayment`, so a failed
+  settle can no longer leave a stale "trust me" entry for that payment.
+- **Renewals counted twice in the ledger.** Stripe renewal intents are
+  stamped `huloRenewal` and their `payment_intent.*` events ignored; Adyen
+  notifications whose merchant reference is a scheduler reference
+  (`<order>-R<yyyymmdd>-<variant>-a<n>`) are ignored. The scheduler's
+  `renewal` row is the only one.
+- **Refund webhooks settled the wrong refund.** `refund.settled` now
+  targets the Vendure refund by the provider's refund id (Stripe `re_…` from
+  `charge.refunded`'s refund list or the new `refund.updated` /
+  `charge.refund.updated` handling, Adyen's REFUND pspReference), then by
+  exact amount, then the only pending one — never "the first pending refund"
+  when several are open. A refund already settled from the handler is not
+  written to the ledger a second time.
+- **Adyen sessions** now include a "Shipping & fees" line for
+  `amount − Σ lines` (Klarna / Afterpay reject sessions whose lines do not
+  sum to the amount).
+- **Hosted page GET froze carts.** Opening the link moved the order to
+  `ArrangingPayment`, so link previews and crawlers locked baskets. The GET
+  is read-only (an `AddingItems` order still lists its providers); the
+  transition happens in `POST …/session`, before the provider session is
+  created.
+- **Mollie `cancelSubscription`** uses the stored customer reference instead
+  of listing up to 250 subscriptions to find it; the provider contract
+  gained an optional `providerCustomerRef` argument.
+- **UUID id strategy.** `hulo_hosted_session.orderId` was `INT`; it is now
+  `VARCHAR(36)` (widened on boot with a guarded `ALTER`, MariaDB/MySQL and
+  Postgres) and compared as text.
+
 ## [0.2.8] — 2026-09-28
 
 Reliability and security pass — no new features. Two columns on

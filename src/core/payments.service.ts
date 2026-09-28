@@ -7,7 +7,7 @@ import { ClientSession, NormalisedEvent, PaymentProvider, ProviderArgs, SavedMet
 import { ResolvedMethod, listHuloMethods, resolveMethod } from './credentials';
 import { LedgerService, loggerCtx } from './ledger.service';
 import { getRuntime, requirePremium } from './runtime';
-import { markSettledByWebhook } from './handlers';
+import { clearSettledByWebhook, markSettledByWebhook, registerWebhookPayment } from './handlers';
 import { request } from './rest';
 import { ensureMollieCustomer } from '../providers/mollie';
 import { SubscriptionService } from '../subscriptions/subscription.service';
@@ -217,46 +217,29 @@ export class PaymentsService {
 
         switch (ev.type) {
             case 'payment.authorized': {
-                if (!order || !payment) { await rec('authorize', 'ok'); return; }
+                if (!order) { await rec('authorize', 'ok'); return; }
+                if (!payment) {
+                    // An Adyen pay-by-link AUTHORISATION: no session, no payment yet — record one against the pspReference.
+                    if (await this.recordPayLinkPayment(ctx, order, method, ev, rec, true)) return;
+                    await rec('authorize', 'ok');
+                    return;
+                }
                 if (ev.paymentRef && String(payment.transactionId).startsWith('adyen-session:')) {
                     await this.db.query(`UPDATE payment SET \`transactionId\` = ? WHERE id = ?`, [ev.paymentRef, payment.id]);
                     payment.transactionId = ev.paymentRef;
                 }
                 await rec('authorize', 'ok', { meta: { event: ev.type, eventId: ev.id, via: 'webhook' } });
                 const immediate = providerCode === 'hulo-adyen' ? method.args.captureMode !== 'manual' : false;
-                if (immediate && payment.state === 'Authorized') {
-                    markSettledByWebhook(payment.id);
-                    const r: any = await this.orderService.settlePayment(ctx, payment.id);
-                    if (r?.errorCode) Logger.warn(`settle after ${ev.type} failed for ${order.code}: ${r.message}`, loggerCtx);
-                }
+                if (immediate && payment.state === 'Authorized') await this.settleFromWebhook(ctx, order, payment.id, ev.type);
                 return;
             }
             case 'payment.settled': {
                 if (!order) { await rec('capture', 'ok'); return; }
                 if (payment && payment.state === 'Authorized') {
-                    markSettledByWebhook(payment.id);
-                    const r: any = await this.orderService.settlePayment(ctx, payment.id);
-                    if (r?.errorCode) Logger.warn(`settle after webhook failed for ${order.code}: ${r.message}`, loggerCtx);
+                    await this.settleFromWebhook(ctx, order, payment.id, ev.type);
                     return; // the handler's settle wrote the ledger row
                 }
-                if (!payment && !(order.payments || []).some(p => p.method !== method.paymentMethodCode && !TERMINAL_PAYMENT_STATES.has(p.state))) {
-                    let target: Order | undefined = order;
-                    if (order.state !== 'ArrangingPayment') {
-                        // A pay-by-link from a provider that reports plain settlement
-                        // (Adyen, Mollie, Square, Checkout.com, Coinbase): the order is a
-                        // draft/quote that never entered ArrangingPayment.
-                        const viaLink = !!ev.raw?.metadata?.huloPayLink || !!ev.raw?.data?.object?.metadata?.huloPayLink || await this.ledger.hasPendingPayLink(order.code);
-                        if (!viaLink || PAID_ORDER_STATES.has(order.state)) {
-                            await rec('capture', 'ok', { meta: { event: ev.type, eventId: ev.id, note: 'no matching Vendure payment' } });
-                            return;
-                        }
-                        const t: any = await this.orderService.transitionToState(ctx, order.id, 'ArrangingPayment');
-                        if (t?.errorCode) { await rec('paylink', 'failed', { reason: t.message }); return; }
-                        target = (await this.orderService.findOne(ctx, order.id, ['payments', 'channels'])) || order;
-                    }
-                    await this.addPaymentFromWebhook(ctx, target, method, ev);
-                    return;
-                }
+                if (!payment && await this.recordPayLinkPayment(ctx, order, method, ev, rec, false)) return;
                 if (payment?.state !== 'Settled') await rec('capture', 'ok', { meta: { event: ev.type, eventId: ev.id, note: 'no matching Vendure payment' } });
                 return;
             }
@@ -270,13 +253,22 @@ export class PaymentsService {
             }
             case 'refund.settled':
             case 'refund.failed': {
-                await rec('refund', ev.type === 'refund.settled' ? 'ok' : 'failed');
-                if (order && payment && ev.type === 'refund.settled') {
-                    const pending = (payment.refunds || []).find(r => r.state === 'Pending');
-                    if (pending) {
-                        try { await this.orderService.settleRefund(ctx, { id: pending.id, transactionId: String(ev.paymentRef || pending.transactionId || '') }); }
-                        catch (e: any) { Logger.warn(`settleRefund: ${e.message}`, loggerCtx); }
-                    }
+                // The Vendure refund this event is about: its own id first, then an exact amount, then the
+                // only pending one — never "the first pending refund" when several are open.
+                const refunds = payment?.refunds || [];
+                const byRef = ev.refundRef ? refunds.find(r => String(r.transactionId || '') === ev.refundRef) : undefined;
+                const pending = refunds.filter(r => r.state === 'Pending');
+                const target = byRef
+                    ?? (ev.refundAmount != null ? pending.find(r => Number(r.total) === ev.refundAmount) : undefined)
+                    ?? (pending.length === 1 && ev.refundAmount == null ? pending[0] : undefined);
+                if (byRef && byRef.state === 'Settled' && ev.type === 'refund.settled') {
+                    Logger.verbose(`${providerCode} ${ev.type} ${ev.refundRef}: refund already settled, ledger row exists`, loggerCtx);
+                    return;
+                }
+                await rec('refund', ev.type === 'refund.settled' ? 'ok' : 'failed', { paymentRef: ev.refundRef || ev.paymentRef || null, amount: ev.refundAmount ?? ev.amount ?? null });
+                if (order && target && target.state === 'Pending' && ev.type === 'refund.settled') {
+                    try { await this.orderService.settleRefund(ctx, { id: target.id, transactionId: String(ev.refundRef || target.transactionId || ev.paymentRef || '') }); }
+                    catch (e: any) { Logger.warn(`settleRefund: ${e.message}`, loggerCtx); }
                 }
                 return;
             }
@@ -302,6 +294,41 @@ export class PaymentsService {
         });
     }
 
+    /** Settle a Vendure payment because the provider said so; the handler trusts the mark for 60 s at most. */
+    private async settleFromWebhook(ctx: RequestContext, order: Order, paymentId: ID, eventType: string): Promise<void> {
+        markSettledByWebhook(paymentId);
+        try {
+            const r: any = await this.orderService.settlePayment(ctx, paymentId);
+            if (r?.errorCode) Logger.warn(`settle after ${eventType} failed for ${order.code}: ${r.message}`, loggerCtx);
+        } finally {
+            clearSettledByWebhook(paymentId);
+        }
+    }
+
+    /**
+     * A pay-by-link from a provider that reports plain authorisation / settlement (Adyen, Mollie, Square,
+     * Checkout.com, Coinbase): the order is a draft/quote that never entered ArrangingPayment and has no
+     * payment yet. Returns false when this event is not a pay-link completion for this order.
+     * `linkOnly` demands pay-link evidence even in ArrangingPayment (an AUTHORISATION racing the
+     * customer's own Drop-in completion is not a pay-link).
+     */
+    private async recordPayLinkPayment(ctx: RequestContext, order: Order, method: ResolvedMethod, ev: NormalisedEvent, rec: (kind: any, status: any, extra?: any) => Promise<number>, linkOnly: boolean): Promise<boolean> {
+        if ((order.payments || []).some(p => p.method !== method.paymentMethodCode && !TERMINAL_PAYMENT_STATES.has(p.state))) return false;
+        let target: Order | undefined = order;
+        const arranging = order.state === 'ArrangingPayment';
+        if (!arranging || linkOnly) {
+            const viaLink = !!ev.raw?.metadata?.huloPayLink || !!ev.raw?.data?.object?.metadata?.huloPayLink || await this.ledger.hasPendingPayLink(order.code);
+            if (!viaLink || PAID_ORDER_STATES.has(order.state)) return false;
+        }
+        if (!arranging) {
+            const t: any = await this.orderService.transitionToState(ctx, order.id, 'ArrangingPayment');
+            if (t?.errorCode) { await rec('paylink', 'failed', { reason: t.message }); return true; }
+            target = (await this.orderService.findOne(ctx, order.id, ['payments', 'channels'])) || order;
+        }
+        await this.addPaymentFromWebhook(ctx, target, method, ev);
+        return true;
+    }
+
     /** The order row under `SELECT … FOR UPDATE`, then a fresh copy with its payments. */
     private async lockOrder(ctx: RequestContext, id: ID): Promise<Order | undefined> {
         await this.connection.getRepository(ctx, Order).createQueryBuilder('o').setLock('pessimistic_write').where('o.id = :id', { id }).getOne();
@@ -316,7 +343,10 @@ export class PaymentsService {
             && ((ref && (p.transactionId === ref || String(p.metadata?.paymentIntentId || '') === ref || String(p.metadata?.molliePaymentId || '') === ref || String(p.metadata?.paypalOrderId || '') === ref))
                 || (sessionId && String(p.metadata?.sessionId || '') === sessionId)));
         if (dup) { Logger.verbose(`${ev.type} for ${order.code}: payment already recorded, skipped`, loggerCtx); return; }
-        const metadata = { paymentIntentId: ev.paymentRef, molliePaymentId: ev.paymentRef, paypalOrderId: ev.paymentRef, sessionId: ev.raw?.sessionId, viaWebhook: ev.type };
+        const metadata = { paymentIntentId: ev.paymentRef, molliePaymentId: ev.paymentRef, paypalOrderId: ev.paymentRef, pspReference: ev.paymentRef, sessionId: ev.raw?.sessionId, viaWebhook: ev.type };
+        // Providers without a "fetch payment" API (Adyen) confirm from these verified facts; the handler
+        // only accepts a pspReference that was registered here, so clients cannot forge one.
+        if (ev.paymentRef) registerWebhookPayment(order.code, { paymentRef: ev.paymentRef, type: ev.type, amount: ev.amount ?? undefined, currency: ev.currency || undefined });
         const r: any = await this.orderService.addPaymentToOrder(ctx, order.id, { method: method.paymentMethodCode, metadata });
         if (r?.errorCode) {
             Logger.warn(`addPaymentToOrder from webhook (${ev.type}) failed for ${order.code}: ${r.message}`, loggerCtx);

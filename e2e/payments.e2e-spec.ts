@@ -1,4 +1,4 @@
-import { mergeConfig } from '@vendure/core';
+import { TransactionalConnection, mergeConfig } from '@vendure/core';
 import { createTestEnvironment, registerInitializer, MysqlInitializer, testConfig } from '@vendure/testing';
 import { createHmac } from 'crypto';
 import gql from 'graphql-tag';
@@ -156,6 +156,33 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         expect(again.status).toBe(302);
         const ledgerRows = await ledger().list({ kind: 'authorize' });
         expect(ledgerRows.items[0]).toMatchObject({ provider: 'hulo-bank-transfer', orderCode: t.transitionOrderToState.code, amount: 1999 });
+
+        // 0.2.9: the GET is read-only (link previews must not freeze a cart); the order enters
+        // ArrangingPayment on the first /session call. A new basket in this session:
+        await shop(`mutation($id: ID!) { addItemToOrder(productVariantId: $id, quantity: 2) { ... on Order { code state } ... on ErrorResult { errorCode message } } }`, { id: variant.createProductVariants[0].id });
+        await shop(`mutation { setCustomerForOrder(input: { emailAddress: "hosted2@example.test", firstName: "Hosted", lastName: "Two" }) { ... on Order { code } ... on ErrorResult { errorCode message } } }`);
+        await shop(`mutation { setOrderShippingAddress(input: { fullName: "Hosted Two", streetLine1: "2 Test St", city: "London", postalCode: "SW1A 1AA", countryCode: "GB" }) { ... on Order { code } ... on ErrorResult { errorCode message } } }`);
+        await shop(`mutation($id: [ID!]!) { setOrderShippingMethod(shippingMethodId: $id) { ... on Order { code } ... on ErrorResult { errorCode message } } }`, { id: [m.eligibleShippingMethods[0].id] });
+        const h2: any = await shop(`mutation { huloHostedCheckout(returnUrl: "https://shop.test/checkout/return") { url } }`);
+        const page2 = await fetch(h2.huloHostedCheckout.url);
+        expect(page2.status).toBe(200);
+        expect(page2.headers.get('content-security-policy-report-only')).toMatch(/script-src 'nonce-[A-Za-z0-9+/=]+' https:\/\/js\.stripe\.com/);
+        expect(page2.headers.get('content-security-policy')).toBe("frame-ancestors 'none'; base-uri 'none'");
+        const html2 = await page2.text();
+        const nonce = (html2.match(/<script nonce="([^"]+)">/) || [])[1];
+        expect(nonce).toBeTruthy();
+        expect(page2.headers.get('content-security-policy-report-only')).toContain(`'nonce-${nonce}'`);
+        expect(html2).toContain('Bank transfer');
+        expect((await shop(`{ activeOrder { state } }`)).activeOrder.state).toBe('AddingItems');
+        const sess2 = await fetch(`${h2.huloHostedCheckout.url}/session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'bank' }) });
+        expect(sess2.status).toBe(200);
+        expect((await shop(`{ activeOrder { state } }`)).activeOrder.state).toBe('ArrangingPayment');
+        // The CSP report endpoint answers 204 to a browser's application/csp-report body.
+        const rep = await fetch(`${BASE}/hulo-payments/csp-report`, { method: 'POST', headers: { 'content-type': 'application/csp-report' }, body: JSON.stringify({ 'csp-report': { 'document-uri': h2.huloHostedCheckout.url, 'violated-directive': 'script-src', 'blocked-uri': 'https://evil.test/x.js' } }) });
+        expect(rep.status).toBe(204);
+        // hulo_hosted_session.orderId is stored as text (UUID id strategies).
+        const [col]: any[] = await (server as any).app.get(TransactionalConnection).rawConnection.query(`SELECT DATA_TYPE AS dt FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'hulo_hosted_session' AND column_name = 'orderId'`);
+        expect(String(col.dt).toLowerCase()).toBe('varchar');
     });
 
     it('adds a provider to a channel as a disabled, named placeholder method', async () => {
