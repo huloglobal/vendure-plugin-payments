@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] — 2026-09-30
+
+### Fixed
+- Settings → Payment methods: the description line under a HULO method decodes HTML entities (`&amp;`, `&#39;`, …) that Vendure's rich-text editor stores, so "Card & Apple Pay" no longer shows as `Card &amp; Apple Pay`.
+
 ## [0.2.9] — 2026-09-28
 
 Follow-up to the 0.2.8 audit — no new features. One column type change on

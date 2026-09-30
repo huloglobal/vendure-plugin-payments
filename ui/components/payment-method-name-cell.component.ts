@@ -65,9 +65,18 @@ export class HuloPaymentMethodNameCellComponent implements CustomColumnComponent
     }
 }
 
+/** Vendure's rich-text editor stores descriptions as HTML, so "Card & Apple Pay" arrives as `Card &amp; Apple Pay`. */
+function decodeEntities(text: string): string {
+    const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“' };
+    return text
+        .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+        .replace(/&([a-z]+);/gi, (m, n) => named[n.toLowerCase()] ?? m);
+}
+
 function firstLine(html: string | undefined): string {
     if (!html) return '';
-    const text = String(html).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    const text = decodeEntities(String(html).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     const cut = text.search(/[.!?](\s|$)/);
     const line = cut > 0 ? text.slice(0, cut + 1) : text;
     return line.length > 110 ? line.slice(0, 107) + '…' : line;
