@@ -8,7 +8,8 @@ import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
-import { getRuntime, PremiumRequiredError, requirePremium } from './runtime';
+import { BUY_URL, getRuntime, PremiumRequiredError, requirePremium } from './runtime';
+import { HuloPaymentsEngagementService } from '../engagement.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
@@ -39,7 +40,7 @@ function clampDays(v: unknown, fallback: number): number {
 }
 
 function fail(res: Response, e: any) {
-    if (e instanceof PremiumRequiredError) return res.status(402).json({ error: 'licence-required', message: e.message, buyUrl: 'https://huloglobal.com/vendure-plugins/payments/' });
+    if (e instanceof PremiumRequiredError) return res.status(402).json({ error: 'licence-required', message: e.message, buyUrl: BUY_URL });
     return res.status(400).json({ error: e?.message || String(e) });
 }
 
@@ -53,6 +54,7 @@ export class HuloPaymentsAdminController {
         private payments: PaymentsService,
         private subscriptions: SubscriptionService,
         private paymentMethodService: PaymentMethodService,
+        private engagement: HuloPaymentsEngagementService,
     ) {}
 
     /** Field metadata for the Connect form, derived from the handler args so labels stay in one place. */
@@ -69,9 +71,14 @@ export class HuloPaymentsAdminController {
     async dashboard(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
         if (denyUnlessAdmin(ctx, res, false)) return;
         const channelId = scopedChannel(ctx, q.channelId);
-        const [ledger, subs, methods] = await Promise.all([this.ledger.stats(channelId, clampDays(q.days, 30)), this.subscriptions.stats(), listHuloMethods(this.connection)]);
+        const days = clampDays(q.days, 30);
+        const now = new Date();
+        const [ledger, subs, methods, renewalsRecovered] = await Promise.all([
+            this.ledger.stats(channelId, days), this.subscriptions.stats(), listHuloMethods(this.connection),
+            this.engagement.renewalsRecovered(new Date(now.getTime() - days * 86_400_000), now, channelId).catch(() => 0),
+        ]);
         return res.json({
-            premium: getRuntime().hasPremiumAccess(), ledger, subscriptions: subs,
+            premium: getRuntime().hasPremiumAccess(), ledger, subscriptions: subs, renewalsRecovered,
             providers: allProviders().map(p => ({ code: p.code, name: p.name, freeTier: p.freeTier, capabilities: p.capabilities, configured: methods.some(m => m.handlerCode === p.code && m.enabled) })),
         });
     }
@@ -194,7 +201,7 @@ export class HuloPaymentsAdminController {
         if (!ctx.userHasPermissions([Permission.CreatePaymentMethod]) && !ctx.userHasPermissions([Permission.UpdatePaymentMethod])) return res.status(403).json({ error: 'forbidden' });
         const provider = getProvider(code);
         if (!provider) return res.status(404).json({ error: 'unknown provider' });
-        if (!provider.freeTier && !getRuntime().hasPremiumAccess()) return res.status(402).json({ error: 'licence-required', message: `${provider.name} needs a HULO Payments licence`, buyUrl: 'https://huloglobal.com/vendure-plugins/payments/' });
+        if (!provider.freeTier && !getRuntime().hasPremiumAccess()) return res.status(402).json({ error: 'licence-required', message: `${provider.name} needs a HULO Payments licence`, buyUrl: BUY_URL });
         try {
             const channelId = Number(body?.channelId) || (ctx.channelId as number);
             if (!channelAllowed(ctx, channelId)) return res.status(403).json({ error: 'forbidden' });

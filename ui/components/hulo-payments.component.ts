@@ -62,6 +62,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/payments/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
+                <div class="notice-strip" *ngIf="meta.notice">{{ meta.notice.message }}</div>
             </div>
         </vdr-page-block>
         <vdr-page-block *ngIf="meta && !meta.licensed">
@@ -73,6 +74,8 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     </ng-container>
                     <ng-template #evalNoClock>everything is enabled — all eleven providers, subscriptions, saved cards, pay-by-link, routing and surcharges included.</ng-template>
                     Afterwards the plugin drops to the free tier.
+                    <div class="feature-line" *ngIf="meta.premiumFeatures?.length">Included now, lost on the free tier: {{ meta.premiumFeatures.join(' · ') }}</div>
+                    <div class="feature-line" *ngIf="meta.recentStats?.length"><strong>So far:</strong> {{ statsLine() }}</div>
                 </div>
                 <div class="actions eval-actions">
                     <select [(ngModel)]="buyPlan" [disabled]="buying" class="plan-select"><option value="monthly">Monthly · 14-day free trial</option><option value="annual">Annual · 14-day free trial, 2 months free</option><option value="lifetime">Lifetime · one-off</option></select>
@@ -80,11 +83,19 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/payments/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
+                <div class="actions eval-actions" *ngIf="!remindSent; else remindDone">
+                    <input class="eval-email" type="email" placeholder="you@example.com" [(ngModel)]="remindEmail" [disabled]="reminding" aria-label="Email address for the reminder">
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="remindMe()" [disabled]="reminding || !remindEmail">{{ reminding ? 'Saving…' : 'Email me before it ends' }}</button>
+                </div>
+                <ng-template #remindDone><span style="font-size:12.5px;font-weight:600">✓ We will email {{ remindEmail }} before the evaluation ends.</span></ng-template>
+                <div class="notice-strip" *ngIf="meta.notice">{{ meta.notice.message }}</div>
             </div>
             <div class="update-banner major" *ngIf="meta.tier !== 'trial'">
                 <div>
                     <strong>🔓 Free tier</strong> — Stripe (cards, wallets, 3-D Secure, captures, refunds, disputes), bank transfer, pay-later, the hosted checkout page, the ledger and this dashboard stay active. The other eight providers, subscriptions, saved cards, pay-by-link, provider routing and surcharges need a licence.
                     Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence.
+                    <div class="feature-line" *ngIf="meta.premiumFeatures?.length">With a licence: {{ meta.premiumFeatures.join(' · ') }}</div>
+                    <div class="feature-line" *ngIf="meta.recentStats?.length"><strong>{{ meta.eval?.source === 'server' ? 'During your evaluation:' : 'So far:' }}</strong> {{ statsLine() }}</div>
                 </div>
                 <div class="actions">
                     <select [(ngModel)]="buyPlan" [disabled]="buying" class="plan-select"><option value="monthly">Monthly</option><option value="annual">Annual (2 months free)</option><option value="lifetime">Lifetime</option></select>
@@ -92,6 +103,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/payments/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
+                <div class="notice-strip" *ngIf="meta.notice">{{ meta.notice.message }}</div>
             </div>
             <div class="update-banner" style="margin-top:8px">
                 <div><strong>🔑 Already have a licence key?</strong> Paste it from your purchase email to activate instantly — no .env edit, no redeploy.</div>
@@ -115,17 +127,6 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
             </div>
         </vdr-page-block>
 
-        <vdr-page-block *ngIf="dash && !configuredCount()">
-            <div class="card"><div class="card-block">
-                <h3 class="step-title" style="margin:0 0 4px">Three steps to taking payments</h3>
-                <div class="hulo-help-grid" style="margin-top:12px">
-                    <div class="hulo-help-card"><div class="hulo-help-num">1</div><h4>Connect a provider</h4><p>Stripe, Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, crypto, bank transfer or pay later. Paste the keys; the plugin checks them and sets up the webhook.</p><button class="gbtn gbtn-primary gbtn-sm" style="margin-top:8px" (click)="go('providers')">Choose a provider →</button></div>
-                    <div class="hulo-help-card"><div class="hulo-help-num">2</div><h4>Send customers to the hosted checkout</h4><p>One mutation, one redirect: <span class="code-inline">huloHostedCheckout(returnUrl)</span> returns a page that shows every enabled method and brings the customer back paid. No provider code in your storefront.</p><button class="gbtn gbtn-outline gbtn-sm" style="margin-top:8px" (click)="go('settings')">Brand the page →</button></div>
-                    <div class="hulo-help-card"><div class="hulo-help-num">3</div><h4>Take a test payment</h4><p>Use test-mode keys first; every capture, refund and dispute shows up in Transactions. Switch to live keys with Reconnect when you are happy.</p><a class="gbtn gbtn-outline gbtn-sm" style="margin-top:8px" href="https://huloglobal.com/vendure-plugins/payments/docs/" target="_blank">Read the guide ↗</a></div>
-                </div>
-            </div></div>
-        </vdr-page-block>
-
         <vdr-page-block>
             <div class="card top-bar"><div class="card-block">
                 <div class="tabs" role="tablist">
@@ -142,6 +143,23 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
 
         <!-- OVERVIEW -->
         <ng-container *ngIf="tab==='overview' && dash">
+            <vdr-page-block *ngIf="setup && setupVisible()">
+                <div class="card setup-card"><div class="card-block">
+                    <div class="row-between">
+                        <h3 class="step-title" style="margin:0">Set-up checklist <small>{{ setupDone() }} of {{ setup.items.length }} done</small></h3>
+                        <a class="link-more" style="cursor:pointer" (click)="hideSetup()">Hide</a>
+                    </div>
+                    <ul class="feature-list setup-list">
+                        <li *ngFor="let i of setup.items; trackBy: trackByKey">
+                            <span class="status-dot" [class.on]="i.done"></span>
+                            <span><strong>{{ i.label }}</strong> <span class="muted">— {{ i.hint }}</span>
+                                <a *ngIf="!i.done && i.tab" class="link-more" style="cursor:pointer;margin-left:6px" (click)="go($any(i.tab))">Open →</a>
+                                <a *ngIf="!i.done && !i.tab && i.url" class="link-more" style="margin-left:6px" [href]="i.url" target="_blank" rel="noopener">Read how ↗</a>
+                            </span>
+                        </li>
+                    </ul>
+                </div></div>
+            </vdr-page-block>
             <vdr-page-block>
                 <div class="kpi-row">
                     <div class="kpi"><div class="kpi-label">Volume · {{ days }}d</div><div class="kpi-num">{{ money(dash.ledger.totals.volume, mainCurrency()) }}</div><div class="kpi-sub">{{ dash.ledger.totals.captures }} captures</div></div>
@@ -149,6 +167,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <div class="kpi"><div class="kpi-label">Refunded</div><div class="kpi-num">{{ money(dash.ledger.totals.refunded, mainCurrency()) }}</div><div class="kpi-sub">last {{ days }} days</div></div>
                     <div class="kpi" [class.kpi-alert]="dash.ledger.totals.openDisputes"><div class="kpi-label">Disputes</div><div class="kpi-num">{{ dash.ledger.totals.openDisputes }}</div><div class="kpi-sub">open · {{ dash.ledger.totals.disputes }} in period</div></div>
                     <div class="kpi"><div class="kpi-label">Subscriptions</div><div class="kpi-num">{{ dash.subscriptions.active + dash.subscriptions.trialing }}</div><div class="kpi-sub">MRR {{ mrrLabel() }}<span *ngIf="dash.subscriptions.pastDue"> · {{ dash.subscriptions.pastDue }} past due</span></div></div>
+                    <div class="kpi"><div class="kpi-label">Renewals recovered</div><div class="kpi-num">{{ dash.renewalsRecovered ?? 0 }}</div><div class="kpi-sub">failed, then paid · {{ days }}d</div></div>
                 </div>
             </vdr-page-block>
             <vdr-page-block>
@@ -433,6 +452,24 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                 </ng-container>
             </div></div>
         </vdr-page-block>
+
+        <!-- WEEKLY REPORT -->
+        <vdr-page-block *ngIf="tab==='settings' && digest">
+            <div class="card"><div class="card-block">
+                <h3 class="step-title">Weekly report</h3>
+                <p class="hint">Every Monday at 08:00 (server time) the plugin emails what it did last week — payments taken, refunds, disputes, subscriptions and failed renewals it recovered — plus the next set-up steps. Needs <span class="code-inline">SMTP_SERVER</span>, <span class="code-inline">SMTP_USER</span> and <span class="code-inline">SMTP_PASSWORD</span> in the host environment (the same transport as ops alerts).</p>
+                <div class="form-grid">
+                    <div class="form-row"><label>Send the weekly report</label><span class="gb-switch-group"><button class="gb-switch" role="switch" [attr.aria-checked]="digest.enabled" [class.on]="digest.enabled" (click)="digest.enabled = !digest.enabled"><span class="gb-switch-knob"></span></button><span>{{ digest.enabled ? 'On' : 'Off' }}</span></span></div>
+                    <div class="form-row"><label>Recipient</label><input class="form-input" style="width:100%" type="email" [(ngModel)]="digest.recipient" [placeholder]="digest.defaultRecipient ? 'Defaults to ' + digest.defaultRecipient : 'No default yet — enter an address'"></div>
+                </div>
+                <p class="hint" style="margin-top:10px">Last sent {{ digest.lastSentAt ? (digest.lastSentAt | date:'d MMM y HH:mm') : 'never' }} · next {{ digest.nextDueAt ? (digest.nextDueAt | date:'d MMM y HH:mm') : '—' }}</p>
+                <div class="picker">
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="saveDigest()" [disabled]="digestBusy">{{ digestBusy ? 'Saving…' : 'Save' }}</button>
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="sendTestDigest()" [disabled]="digestBusy">Send me a test</button>
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="previewDigest()" [disabled]="digestBusy">Preview</button>
+                </div>
+            </div></div>
+        </vdr-page-block>
 `,
     styles: [`
         .pm-matrix-wrap { overflow-x: auto; border: 1px solid var(--color-weight-200, #e2e8f0); border-radius: 10px; background: var(--color-component-bg-100, #fff); }
@@ -699,6 +736,11 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
         .update-banner .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         .eval-actions { align-items: center; }
         .eval-email { padding: 5px 9px; border: 1px solid var(--gb-ui-border); border-radius: 7px; font-size: 12.5px; min-width: 190px; background: #fff; color: #0f172a; }
+        .notice-strip { flex-basis: 100%; margin-top: 4px; padding: 8px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 600; background: var(--gb-tint-warn); border: 1px solid var(--gb-line-warn); border-left: 4px solid var(--gb-amber); color: var(--gb-strong); }
+        .feature-line { margin-top: 6px; font-size: 12.5px; color: var(--gb-muted); }
+        .setup-card { border-left: 4px solid var(--gb-amber); }
+        .setup-list { margin-top: 10px; }
+        .setup-list .muted { font-weight: 400; }
 
         @media (prefers-reduced-motion: reduce) {
             .gbtn, .tab, .seg { transition: none; }
@@ -761,6 +803,9 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     settingsList: any[] | null = null; cfg: any = null; cfgIdx = 0;
     linkOrder = ''; linkProvider = ''; linkHours = 72; link: any = null; links: any = null; copied = false;
     connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
+    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
+    digest: any = null; digestBusy = false;
+    remindEmail = ''; reminding = false; remindSent = false;
 
     constructor(private http: HttpClient, private notification: NotificationService, private modal: ModalService, private cdr: ChangeDetectorRef, private route: ActivatedRoute, private cache: HuloProvidersCacheService) {}
 
@@ -787,7 +832,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     private pendingConnect = '';
     ngOnDestroy() { this.stopClaimPoll(); }
 
-    reloadAll() { this.loadMeta(); if (this.tab !== 'overview') this.loadDashboard(); this.go(this.tab, true); }
+    reloadAll() { this.loadMeta(); this.loadSetup(); if (this.tab !== 'overview') this.loadDashboard(); this.go(this.tab, true); }
 
     loadMeta() {
         this.http.get<any>(`${API}/meta`, this.h()).subscribe({ next: m => { this.meta = m; this.loading = false; this.cdr.markForCheck(); }, error: () => { this.loading = false; this.cdr.markForCheck(); } });
@@ -801,10 +846,73 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (t === 'subscriptions' && (force || !this.subs)) this.loadSubs();
         if (t === 'paylink' && (force || !this.links)) this.loadLinks();
         if ((t === 'providers' || t === 'methods') && (force || !this.providers)) this.loadProviders();
-        if (t === 'settings' && (force || !this.settingsList)) this.loadSettings();
+        if (t === 'settings' && (force || !this.settingsList)) { this.loadSettings(); this.loadDigest(); }
         this.cdr.markForCheck();
     }
     trackById(_: number, r: any) { return r?.id ?? _; }
+    trackByKey(_: number, r: any) { return r?.key ?? _; }
+
+    // ── Set-up checklist (GET /setup only; "Hide" lives in localStorage) ──
+    private static readonly SETUP_HIDDEN = 'hulo-vendure-plugin-payments-setup-hidden';
+    loadSetup() { this.http.get<any>(`${API}/setup`, this.h()).subscribe({ next: s => { this.setup = s; this.cdr.markForCheck(); }, error: () => undefined }); }
+    setupDone(): number { return (this.setup?.items || []).filter(i => i.done).length; }
+    /** Hidden once complete, or after "Hide" — unless an item that was done then has come undone since. */
+    setupVisible(): boolean {
+        if (!this.setup || this.setup.complete) return false;
+        let hidden = ''; let doneThen: string[] = [];
+        try { hidden = localStorage.getItem(HuloPaymentsComponent.SETUP_HIDDEN) || ''; doneThen = (localStorage.getItem(HuloPaymentsComponent.SETUP_HIDDEN + '-done') || '').split(',').filter(Boolean); } catch { /* storage unavailable */ }
+        if (hidden !== '1') return true;
+        return this.setup.items.some(i => !i.done && doneThen.includes(i.key));
+    }
+    hideSetup() {
+        try {
+            localStorage.setItem(HuloPaymentsComponent.SETUP_HIDDEN, '1');
+            localStorage.setItem(HuloPaymentsComponent.SETUP_HIDDEN + '-done', (this.setup?.items || []).filter(i => i.done).map(i => i.key).join(','));
+        } catch { /* storage unavailable */ }
+        this.cdr.markForCheck();
+    }
+
+    // ── Weekly report ──
+    loadDigest() { this.http.get<any>(`${API}/digest/settings`, this.h()).subscribe({ next: d => { this.digest = d; this.cdr.markForCheck(); }, error: () => undefined }); }
+    saveDigest() {
+        this.digestBusy = true;
+        this.http.post<any>(`${API}/digest/settings`, { enabled: !!this.digest.enabled, recipient: this.digest.recipient || null }, this.h()).subscribe({
+            next: d => { this.digestBusy = false; this.digest = d; this.notification.success('Weekly report settings saved'); this.cdr.markForCheck(); },
+            error: e => { this.digestBusy = false; this.notification.error(this.errMsg(e, 'Could not save the weekly report settings')); this.cdr.markForCheck(); },
+        });
+    }
+    sendTestDigest() {
+        this.digestBusy = true;
+        this.http.post<any>(`${API}/digest/send-test`, { to: this.digest?.recipient || undefined }, this.h()).subscribe({
+            next: r => {
+                this.digestBusy = false;
+                if (r?.sent) this.notification.success(`Sent "${r.subject}" to ${r.to}`);
+                else this.notification.error(r?.reason === 'no-recipient' ? 'No recipient — enter an address first (or set an ops email)' : `Not sent: ${r?.reason || 'unknown error'}`);
+                this.cdr.markForCheck();
+            },
+            error: e => { this.digestBusy = false; this.notification.error(this.errMsg(e, 'Could not send the test report')); this.cdr.markForCheck(); },
+        });
+    }
+    /** The API may be on another origin with a bearer token, so the HTML is fetched here and opened as a blob. */
+    previewDigest() {
+        const o = this.h();
+        this.http.get(`${API}/digest/preview`, { headers: o.headers, withCredentials: true, responseType: 'text' }).subscribe({
+            next: html => { const url = URL.createObjectURL(new Blob([html], { type: 'text/html' })); window.open(url, '_blank', 'noopener'); setTimeout(() => URL.revokeObjectURL(url), 60_000); },
+            error: e => this.notification.error(this.errMsg(e, 'Could not build the preview')),
+        });
+    }
+
+    // ── Trial reminder ──
+    remindMe() {
+        const email = (this.remindEmail || '').trim();
+        if (!email) return;
+        this.reminding = true;
+        this.http.post<any>(`${API}/eval/remind-me`, { email }, this.h()).subscribe({
+            next: () => { this.reminding = false; this.remindSent = true; this.cdr.markForCheck(); },
+            error: e => { this.reminding = false; this.notification.error(this.errMsg(e, 'Could not save the reminder — check the address')); this.cdr.markForCheck(); },
+        });
+    }
+    statsLine(): string { return (this.meta?.recentStats || []).map((s: any) => `${s.value} ${s.label}`).join(' · '); }
     trackByDay(_: number, b: { day: string }) { return b?.day ?? _; }
 
     loadDashboard() { this.http.get<any>(`${API}/dashboard`, this.h({ params: { days: String(this.days) } })).subscribe({ next: d => { this.dash = d; this.bars = this.computeBars(d); this.cdr.markForCheck(); }, error: () => undefined }); }
@@ -852,7 +960,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         this.busy = true;
         this.http.post<any>(`${API}/subscriptions/${s.id}/${action}`, {}, this.h()).subscribe({
             next: () => { this.busy = false; this.loadSubs(); this.loadDashboard(); },
-            error: e => { this.busy = false; this.notification.error(this.errMsg(e, `Could not ${action}`)); this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.notification.error(this.errMsg(e, `Could not ${action}`, action === 'pause' ? 'Pausing a subscription' : 'Resuming a subscription')); this.cdr.markForCheck(); },
         });
     }
     async cancelSub(s: any) {
@@ -861,14 +969,14 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         this.busy = true;
         this.http.post<any>(`${API}/subscriptions/${s.id}/cancel`, { atPeriodEnd: atEnd }, this.h()).subscribe({
             next: () => { this.busy = false; this.notification.success(atEnd ? 'Will cancel at the end of the paid period' : 'Subscription cancelled'); this.loadSubs(); this.loadDashboard(); },
-            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not cancel')); this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not cancel', 'Cancelling a subscription')); this.cdr.markForCheck(); },
         });
     }
     runScheduler() {
         this.busy = true;
         this.http.post<any>(`${API}/scheduler/run`, {}, this.h()).subscribe({
             next: r => { this.busy = false; this.notification.success(`Renewals: ${r.charged} charged, ${r.failed} failed, ${r.canceled} ended`); this.loadSubs(); },
-            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Scheduler failed')); this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Scheduler failed', 'Running renewals')); this.cdr.markForCheck(); },
         });
     }
 
@@ -947,14 +1055,14 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         this.busy = true; this.connectResult = null;
         this.http.post<any>(`${API}/connect/${p.code}`, { channelId: this.connectChannel, args: this.connectArgs }, this.h()).subscribe({
             next: r => { this.busy = false; this.connectResult = r; this.notification.success(`${p.name} connected`); this.cache.invalidate(); this.loadProviders(); this.loadDashboard(); this.cdr.markForCheck(); },
-            error: e => { this.busy = false; this.connectResult = { ok: false, message: e?.error?.message || this.errMsg(e, 'Connect failed') }; this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.connectResult = { ok: false, message: e?.status === 402 ? this.errMsg(e, 'Connect failed', `Connecting ${p.name}`) : (e?.error?.message || this.errMsg(e, 'Connect failed')) }; this.cdr.markForCheck(); },
         });
     }
     createLink() {
         this.busy = true; this.link = null; this.copied = false;
         this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), methodCode: this.linkProvider || undefined, expiresInHours: this.linkHours }, this.h()).subscribe({
             next: r => { this.busy = false; this.link = r; this.loadLinks(); this.cdr.markForCheck(); },
-            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not create the link')); this.cdr.markForCheck(); },
+            error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not create the link', 'Pay by link')); this.cdr.markForCheck(); },
         });
     }
     copy(text: string) { navigator.clipboard?.writeText(text).then(() => { this.copied = true; this.cdr.markForCheck(); setTimeout(() => { this.copied = false; this.cdr.markForCheck(); }, 2000); }); }
@@ -978,7 +1086,15 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         });
     }
 
-    private errMsg(e: any, fallback: string): string { return e?.error?.message || e?.error?.error || e?.message || fallback; }
+    /** `what` names the attempted action for the licence message ("Pay by link needs a licence — …"). */
+    private errMsg(e: any, fallback: string, what?: string): string {
+        const code = String(e?.error?.error || '');
+        if (e?.status === 402 || ['licence-required', 'licence_required', 'premium-feature'].includes(code)) {
+            const action = what || fallback.replace(/^Could not\s+/i, '').replace(/^\w/, c => c.toUpperCase());
+            return `${action} needs a licence — start the free trial or activate a key at the top of this page.`;
+        }
+        return e?.error?.message || e?.error?.error || e?.message || fallback;
+    }
 
     money(minor: number | null | undefined, currency?: string | null): string {
         if (minor == null || isNaN(Number(minor))) return '—';
@@ -1052,7 +1168,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
         if (l.trialEndsAt && new Date(l.trialEndsAt).getTime() > Date.now()) {
             return `free trial on the ${l.plan} plan — first charge on ${d(l.trialEndsAt)}; cancel any time before then via Manage billing`;
         }
-        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' (current key valid until ' + d(l.expiresAt) + ')' : ''}`;
+        return `${l.plan} subscription — renews automatically${l.expiresAt ? ' — current key valid until ' + d(l.expiresAt) : ''}`;
     }
 
     openPortal() {

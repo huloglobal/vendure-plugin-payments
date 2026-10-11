@@ -50,7 +50,8 @@ a few REST calls on the platform `fetch`.
 
 ## In the admin
 
-- **Payments** (Sales → Payments): dashboard, a **Payment methods** tab (every provider × every channel, Add / Connect per cell), transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings.
+- **Payments** (Sales → Payments): a set-up checklist, dashboard, a **Payment methods** tab (every provider × every channel, Add / Connect per cell), transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings (routing, surcharges, hosted page, operations, weekly report).
+- **Dashboard → Add widget → Payments**: last 7 days' takings, settled payments and disputes on the Admin home page.
 - **Settings → Payment methods**: a **Connect a payment provider** button; every HULO method in the list shows a brand mark, one status word (Live / Test mode / Ready, disabled / Not set up) and the first line of its description; and under each method a panel that explains the provider, lists what customers can pay with, tests the keys you typed, shows the webhook URL to paste and whether its secret is saved, and walks through going live.
 
 ## Install
@@ -168,6 +169,49 @@ and years (a monthly plan bills on the same day each month). The renewal
 scheduler runs hourly on the worker; the plugin registers Nest's
 `ScheduleModule` itself, so no host wiring is needed. Set
 `disableScheduler: true` to run it elsewhere.
+
+## Weekly report, setup checklist and dashboard widget
+
+**Set-up checklist.** The top of the Payments page lists what is still to
+do, each item checked against the real state of the install: a provider
+connected, a method enabled on a channel, `hostedReturnHosts` set, an ops
+email, every connected provider's webhook secret saved, and a first payment
+in the ledger. "Hide" puts it away until something that was done comes
+undone; it disappears for good once everything is done.
+
+**Weekly report.** Every **Monday at 08:00 (server-local time)** the plugin
+emails what it did last week — payments settled and their value, refunds,
+disputes opened, active subscriptions and MRR, pay-by-link takings and
+failed renewals it went on to recover — each against the previous week,
+plus up to three next steps from the checklist and, on the free tier or
+during the evaluation, what a licence adds. Every figure comes from the
+ledger; nothing is estimated.
+
+- It goes to the address in **Settings → Weekly report**, otherwise the
+  first ops email it finds (the `ops.email` option, then any channel's
+  Settings → Operations address), then the licence holder, then the
+  address left in "Email me before it ends".
+- Turn it off or change the recipient on that card. **Send me a test**
+  mails the week-to-date report now; **Preview** opens it in a new tab.
+- It uses the same SMTP transport as ops alerts: `SMTP_SERVER` (or
+  `SMTP_HOST`), `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` in
+  the host environment, with `nodemailer` installed on the host. Without
+  SMTP nothing is sent and nothing fails.
+- The scheduler runs on the worker process, once per install however many
+  workers you run, and is off when `disableScheduler: true`.
+
+**Dashboard widget.** Dashboard → Add widget → **Payments** shows takings,
+settled payments and disputes for the last 7 days, the licence notice when
+a trial or key is about to end, and a link to the Payments page. Needs
+`ReadOrder`.
+
+**Ops alerts.** Disputes and failed renewals go to the channel's own
+Settings → Operations address first, then the `ops.email` plugin option.
+
+The anonymous usage numbers (counts and totals, never customer data) that
+the evaluation ping sends to the licence server keep flowing after
+purchase via the daily heartbeat; `HULO_HEARTBEAT_DISABLED=true` stops
+them.
 
 ## Tiers
 

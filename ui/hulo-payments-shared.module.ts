@@ -1,13 +1,14 @@
 import { NgModule } from '@angular/core';
 import { Router } from '@angular/router';
-import { SharedModule, addActionBarItem, addNavMenuItem, registerCustomDetailComponent, registerDataTableComponent } from '@vendure/admin-ui/core';
+import { SharedModule, addActionBarItem, addNavMenuItem, registerCustomDetailComponent, registerDashboardWidget, registerDataTableComponent } from '@vendure/admin-ui/core';
 import { HuloPaymentMethodPanelComponent } from './components/payment-method-panel.component';
 import { HuloPaymentMethodNameCellComponent } from './components/payment-method-name-cell.component';
 
 /**
  * Always-loaded part of the extension: the "Payments" nav entry, a
- * "Connect a payment provider" button on Settings → Payment methods, and the
- * explanatory panel under any payment method that uses a HULO handler.
+ * "Connect a payment provider" button on Settings → Payment methods, the
+ * explanatory panel under any payment method that uses a HULO handler, and
+ * the "Payments" dashboard widget (Dashboard → Add widget → Payments).
  */
 @NgModule({
     imports: [SharedModule],
@@ -44,6 +45,12 @@ import { HuloPaymentMethodNameCellComponent } from './components/payment-method-
             tableId: 'payment-method-list',
             columnId: 'name',
             component: HuloPaymentMethodNameCellComponent,
+        }),
+        registerDashboardWidget('hulo-vendure-plugin-payments', {
+            title: 'Payments',
+            supportedWidths: [4, 6, 8],
+            requiresPermissions: ['ReadOrder'],
+            loadComponent: () => import('./components/hulo-payments-widget.component').then(m => m.HuloPaymentsWidgetComponent),
         }),
     ],
 })

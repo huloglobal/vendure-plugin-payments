@@ -8,6 +8,7 @@ import {
 
 import { HuloPaymentsLicenceService, PLUGIN_ID } from './licence.service';
 import { HuloPaymentsLicenceController } from './licence.controller';
+import { HuloPaymentsEngagementService } from './engagement.service';
 import { LedgerService } from './core/ledger.service';
 import { PaymentsService } from './core/payments.service';
 import { WebhookController, webhookRawBodyMiddleware } from './core/webhook.controller';
@@ -18,7 +19,7 @@ import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
 import { makeHandler } from './core/handlers';
 import { allProviders, registerProvider } from './core/provider';
-import { configureRuntime } from './core/runtime';
+import { configureRuntime, getRuntime, OpsMail } from './core/runtime';
 import { stripeProvider } from './providers/stripe';
 import { adyenProvider } from './providers/adyen';
 import { paypalProvider } from './providers/paypal';
@@ -88,21 +89,42 @@ export function getOptions(): HuloPaymentsPluginOptions { return cachedOptions; 
 
 for (const p of [stripeProvider, adyenProvider, paypalProvider, mollieProvider, squareProvider, braintreeProvider, gocardlessProvider, checkoutComProvider, coinbaseProvider, bankTransferProvider, payLaterProvider]) registerProvider(p);
 
+/** SMTP_SERVER (or SMTP_HOST) is set — the only thing ops e-mail and the weekly report need. */
+function smtpConfigured(): boolean { return !!(process.env.SMTP_SERVER || process.env.SMTP_HOST); }
+
 /** One pooled SMTP transport with timeouts (nodemailer's defaults are 2 min connect / 10 min socket). */
 let opsTransport: { key: string; t: any } | null = null;
 function opsTransporter(): any {
+    const host = process.env.SMTP_SERVER || process.env.SMTP_HOST;
     const port = Number(process.env.SMTP_PORT || 587);
-    const key = [process.env.SMTP_SERVER, port, process.env.SMTP_USER, process.env.SMTP_PASSWORD].join('|');
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS;
+    const key = [host, port, user, pass].join('|');
     if (opsTransport?.key === key) return opsTransport.t;
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const nodemailer = require('nodemailer');
     try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
     const t = nodemailer.createTransport({
-        host: process.env.SMTP_SERVER, port, secure: port === 465, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+        host, port, secure: port === 465, auth: user ? { user, pass } : undefined,
         pool: true, maxConnections: 2, maxMessages: 100, connectionTimeout: 5_000, greetingTimeout: 5_000, socketTimeout: 10_000,
     });
     opsTransport = { key, t };
     return t;
+}
+
+/** Send through the ops transport (12 s cap). Throws when SMTP is unset or the send fails — callers decide whether that matters. */
+export async function sendOpsMail(mail: OpsMail): Promise<void> {
+    if (!smtpConfigured()) throw new Error('SMTP is not configured — set SMTP_SERVER, SMTP_USER and SMTP_PASSWORD in the host environment');
+    try {
+        await Promise.race([
+            opsTransporter().sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, ...mail }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('smtp timeout (12 s)')), 12_000)),
+        ]);
+    } catch (e) {
+        try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
+        opsTransport = null;
+        throw e;
+    }
 }
 
 async function notifyOps(event: { kind: string; subject: string; text: string; orderCode?: string; channelId?: number | null }): Promise<void> {
@@ -119,17 +141,12 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
             if (!r?.ok) console.warn(`[${PKG_NAME}] ops webhook answered HTTP ${r?.status}`);
         } catch (e: any) { console.warn(`[${PKG_NAME}] ops webhook failed: ${e?.message || e}`); }
     }
-    if (ops.email && process.env.SMTP_SERVER && process.env.SMTP_USER) {
-        try {
-            await Promise.race([
-                opsTransporter().sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: ops.email, subject: `[Payments] ${event.subject}`, text: event.text }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('smtp timeout (12 s)')), 12_000)),
-            ]);
-        } catch (e: any) {
-            try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
-            opsTransport = null;
-            console.warn(`[${PKG_NAME}] ops e-mail failed: ${e?.message || e}`);
-        }
+    // The channel's own address (Settings → Operations) wins; the `ops.email` option is the fallback for every channel.
+    const channelEmail = event.channelId ? await getRuntime().channelOpsEmail(Number(event.channelId)).catch(() => null) : null;
+    const to = channelEmail || ops.email;
+    if (to && smtpConfigured()) {
+        try { await sendOpsMail({ to, subject: `[Payments] ${event.subject}`, text: event.text }); }
+        catch (e: any) { console.warn(`[${PKG_NAME}] ops e-mail failed: ${e?.message || e}`); }
     }
 }
 
@@ -151,7 +168,7 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
     // ScheduleModule here so the renewal cron fires on hosts that never registered it themselves (Nest de-duplicates the dynamic module).
     imports: [PluginCommonModule, ScheduleModule.forRoot()],
     controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController, CspReportController],
-    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService],
+    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService, HuloPaymentsEngagementService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },
     compatibility: '>=3.5.0 <4.0.0',
     configuration: (config: RuntimeVendureConfig) => {
@@ -181,8 +198,18 @@ export class HuloPaymentsPlugin {
     static startEvaluation(): void {
         if (!HuloPaymentsPlugin.evalClientInternal) {
             HuloPaymentsPlugin.evalClientInternal = new EvaluationClient({ packageName: PKG_NAME, packageVersion: PKG_VERSION });
+            if (HuloPaymentsPlugin.statsProvider) HuloPaymentsPlugin.evalClientInternal.setStatsProvider(HuloPaymentsPlugin.statsProvider);
             HuloPaymentsPlugin.evalClientInternal.start();
         }
+    }
+
+    /** Usage aggregates (numbers only, last 30 days) sent with the evaluation ping before purchase and the
+     *  heartbeat after it, so the licence server's renewal and win-back mails can say what the plugin did. */
+    private static statsProvider: (() => Promise<Record<string, number>>) | null = null;
+    static setStatsProvider(fn: () => Promise<Record<string, number>>): void {
+        HuloPaymentsPlugin.statsProvider = fn;
+        HuloPaymentsPlugin.heartbeat?.setStatsProvider(fn);
+        HuloPaymentsPlugin.evalClientInternal?.setStatsProvider(fn);
     }
 
     private static licenceHost = '';
@@ -245,7 +272,7 @@ export class HuloPaymentsPlugin {
             HuloPaymentsPlugin.heartbeat = new Heartbeat({ packageName: PKG_NAME, packageVersion: PKG_VERSION, licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY) });
             HuloPaymentsPlugin.heartbeat.start();
         }
-        configureRuntime({ hasPremiumAccess: () => HuloPaymentsPlugin.hasPremiumAccess(), publicBaseUrl: () => getOptions().publicBaseUrl, notifyOps });
+        configureRuntime({ hasPremiumAccess: () => HuloPaymentsPlugin.hasPremiumAccess(), publicBaseUrl: () => getOptions().publicBaseUrl, notifyOps, sendMail: sendOpsMail });
         return HuloPaymentsPlugin;
     }
 

@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, TransactionalConnection } from '@vendure/core';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import { configureRuntime } from './runtime';
 
 export const loggerCtx = 'HuloPayments';
 
@@ -69,6 +70,8 @@ export class LedgerService implements OnModuleInit {
 
     async onModuleInit() {
         await this.ensureSchema();
+        // Ops alerts go to the channel's own address (Settings → Operations) before the `ops.email` option.
+        configureRuntime({ channelOpsEmail: async channelId => (await this.getSettings(channelId)).opsEmail || null });
         // Retention for the webhook idempotency log: 180 days is far beyond any provider's redelivery window.
         const purge = () => this.db.query(`DELETE FROM hulo_payment_event WHERE receivedAt < DATE_SUB(NOW(), INTERVAL 180 DAY)`).catch(() => undefined);
         void purge();

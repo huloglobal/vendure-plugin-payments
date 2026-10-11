@@ -5,6 +5,57 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-10-11
+
+### Added
+- **Weekly report.** Monday 08:00 server-local, from the ledger: payments
+  settled and value, refunds, disputes opened, active subscriptions and
+  MRR, pay-by-link takings and failed renewals recovered, each against the
+  previous week, with next steps from the set-up checklist. Settings →
+  **Weekly report** card (on/off, recipient with the default shown, last /
+  next send, **Send me a test**, **Preview**). Endpoints
+  `GET/POST /hulo-payments/digest/settings`, `POST …/digest/send-test`,
+  `GET …/digest/preview`. Uses the ops SMTP transport; nothing is sent
+  without `SMTP_*`. Worker-only, once per install across replicas, off
+  with `disableScheduler`.
+- **Set-up checklist** at the top of the Payments overview
+  (`GET /hulo-payments/setup`): provider connected, method enabled on a
+  channel, `hostedReturnHosts` set, ops email, webhook secret for every
+  connected provider, first payment taken. Replaces the "Three steps"
+  card. "Hide" is remembered in the browser and the card returns if a
+  done item comes undone.
+- **Dashboard widget** (Dashboard → Add widget → Payments): 7-day
+  takings, settled payments and disputes, the licence notice, and a link
+  to the page (`GET /hulo-payments/widget`).
+- **Usage stats** (last 30 days, numbers only) sent with the evaluation
+  ping and, after purchase, the daily heartbeat: `paymentsSettled`,
+  `volumePence`, `refundedPence`, `disputesOpened`, `subscriptionsActive`,
+  `mrrPence`, `payLinkPaidPence`, `renewalsRecovered`.
+- **Renewals recovered** tile on the overview (renewals that succeeded
+  after a failed attempt, from the ledger), also in `GET /dashboard` as
+  `renewalsRecovered`.
+- Licence banners: lifecycle notice (trial ending, key expiring,
+  evaluation ended) in an amber strip, the premium feature list and "So
+  far: …" figures on the trial and free banners, and the trial banner's
+  **Email me before it ends** reminder (the existing `eval/remind-me`
+  route, which now also remembers the address as the weekly report's
+  last-resort recipient). `GET /meta` gains `notice`, `premiumFeatures`
+  and `recentStats`.
+
+### Changed
+- `@huloglobal/vendure-licence-sdk` `^0.15.0`.
+- 402 responses carry `buyUrl: https://elite.charity/licence/buy/vendure-plugin-payments`;
+  the admin UI turns any 402 (or `licence-required` body) into "<action>
+  needs a licence — start the free trial or activate a key at the top of
+  this page."
+- Ops e-mail accepts `SMTP_HOST` as an alias of `SMTP_SERVER` and works
+  without `SMTP_USER` (unauthenticated relays).
+
+### Fixed
+- Ops alerts (disputes, failed renewals) now honour the per-channel
+  **Settings → Operations → Ops email**, falling back to the `ops.email`
+  plugin option; the channel setting was saved but never used.
+
 ## [0.2.10] — 2026-09-30
 
 ### Fixed

@@ -4,6 +4,7 @@ import { Response } from 'express';
 import { describeLicence, evalInstanceId, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
 import { HuloPaymentsPlugin, getOptions } from './plugin';
 import { HuloPaymentsLicenceService } from './licence.service';
+import { HuloPaymentsEngagementService, PREMIUM_FEATURES } from './engagement.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
     const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
@@ -22,13 +23,14 @@ function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 's
  */
 @Controller('hulo-payments')
 export class HuloPaymentsLicenceController {
-    constructor(private licence: HuloPaymentsLicenceService) {}
+    constructor(private licence: HuloPaymentsLicenceService, private engagement: HuloPaymentsEngagementService) {}
 
     @Get('meta')
     async meta(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, false)) return;
         const updater = HuloPaymentsPlugin.getUpdateChecker();
         const licence = HuloPaymentsPlugin.getLicenceStatus();
+        const recentStats = await this.engagement.recentStats().catch(() => []);
         return res.json({
             name: HuloPaymentsPlugin.getPackageName(),
             version: HuloPaymentsPlugin.getPackageVersion(),
@@ -39,6 +41,9 @@ export class HuloPaymentsLicenceController {
             licenceMessage: licence?.valid ? '' : (licence?.message || 'No licence key configured'),
             tier: licence?.valid ? 'paid' : (HuloPaymentsPlugin.getEvalState()?.active ? 'trial' : 'free'),
             eval: HuloPaymentsPlugin.getEvalState(),
+            notice: this.engagement.notice(),
+            premiumFeatures: PREMIUM_FEATURES,
+            recentStats,
         });
     }
 
@@ -125,9 +130,64 @@ export class HuloPaymentsLicenceController {
                 signal: AbortSignal.timeout(8_000),
             });
             if (!resp.ok) return res.status(502).json({ error: 'upstream', status: resp.status });
+            await this.engagement.prefs.set('eval.leadEmail', email);
             return res.json({ ok: true });
         } catch {
             return res.status(502).json({ error: 'unreachable' });
+        }
+    }
+
+    // ── Set-up checklist, dashboard widget, weekly report ──────────────
+
+    @Get('setup')
+    async setup(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        try { return res.json(await this.engagement.setup()); }
+        catch (e: any) { return res.status(500).json({ error: e?.message || 'setup check failed' }); }
+    }
+
+    @Get('widget')
+    async widget(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        try { return res.json(await this.engagement.widget()); }
+        catch (e: any) { return res.status(500).json({ error: e?.message || 'widget failed' }); }
+    }
+
+    @Get('digest/settings')
+    async digestSettings(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        return res.json(await this.engagement.digestSettings());
+    }
+
+    @Post('digest/settings')
+    async digestSaveSettings(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const patch: { enabled?: boolean; recipient?: string | null } = {};
+        if (typeof body?.enabled === 'boolean') patch.enabled = body.enabled;
+        if (body && 'recipient' in body) patch.recipient = body.recipient == null ? null : String(body.recipient).slice(0, 320);
+        try { return res.json(await this.engagement.digest.updateSettings(patch)); }
+        catch (e: any) { return res.status(400).json({ error: 'bad-request', message: e?.message || 'Invalid settings' }); }
+    }
+
+    @Post('digest/send-test')
+    async digestSendTest(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
+        if (denyUnlessAdmin(ctx, res, true)) return;
+        const to = String(body?.to || '').trim().slice(0, 320) || undefined;
+        if (to && !/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(to)) return res.status(400).json({ error: 'bad-request', message: 'Enter a valid email address' });
+        const r = await this.engagement.digest.sendNow(to);
+        return res.json({ sent: r.sent, to: r.to, ...(r.reason ? { reason: r.reason } : {}), subject: r.preview.subject });
+    }
+
+    /** This week's report as HTML, for the "Preview" button. */
+    @Get('digest/preview')
+    async digestPreview(@Ctx() ctx: RequestContext, @Res() res: Response) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        try {
+            const mail = await this.engagement.preview();
+            res.setHeader('Cache-Control', 'no-store');
+            return res.status(200).type('text/html').send(mail.html);
+        } catch (e: any) {
+            return res.status(500).type('text/plain').send(`Could not build the report: ${e?.message || e}`);
         }
     }
 
