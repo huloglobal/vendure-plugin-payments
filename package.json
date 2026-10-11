@@ -30,7 +30,7 @@
         "test:watch": "vitest"
     },
     "dependencies": {
-        "@huloglobal/vendure-licence-sdk": "^0.15.0"
+        "@huloglobal/vendure-licence-sdk": "^0.15.1"
     },
     "peerDependencies": {
         "@nestjs/common": ">=10.0.0",

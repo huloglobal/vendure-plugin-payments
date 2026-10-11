@@ -213,14 +213,19 @@ export class HuloPaymentsPlugin {
     }
 
     private static licenceHost = '';
+    /** The key installed at runtime (admin activation, buy-from-admin claim, boot restore); null = env/init key or none. */
+    private static runtimeLicenceKey: string | null = null;
+    /** The key currently in force — what the heartbeat reports the jti of. */
+    static currentLicenceKey(): string | undefined { return HuloPaymentsPlugin.runtimeLicenceKey ?? cachedOptions.licenceKey; }
 
     static activateRuntimeLicence(key: string): LicenceStatus {
         const status = verifyLicence({ licenceKey: key, pluginId: PLUGIN_ID, host: HuloPaymentsPlugin.licenceHost, publicKey: HULO_PUBLIC_KEY, revokedIds: HuloPaymentsPlugin.revocation?.getRevokedIds() });
-        if (status.valid) { HuloPaymentsPlugin.licenceStatus = status; HuloPaymentsPlugin.evalClientInternal?.stop(); }
+        if (status.valid) { HuloPaymentsPlugin.licenceStatus = status; HuloPaymentsPlugin.runtimeLicenceKey = key; HuloPaymentsPlugin.evalClientInternal?.stop(); }
         return status;
     }
 
     static deactivateRuntimeLicence(): void {
+        HuloPaymentsPlugin.runtimeLicenceKey = null;
         HuloPaymentsPlugin.licenceStatus = { valid: false, message: 'No licence key configured. The plugin will run in the free tier.' } as LicenceStatus;
         HuloPaymentsPlugin.startEvaluation();
         HuloPaymentsPlugin.evalClientInternal?.start();
@@ -269,7 +274,7 @@ export class HuloPaymentsPlugin {
             console.warn(`[${PKG_NAME}] ${status.message} — Running in FREE tier after the 14-day evaluation: Stripe, bank transfer, pay-later, the hosted checkout page, the ledger and the dashboard stay on; the other eight providers, subscriptions, saved cards, pay-by-link, routing and surcharges need a licence. Buy at https://elite.charity/licence/buy/${PLUGIN_ID}`);
         }
         if (!HuloPaymentsPlugin.heartbeat) {
-            HuloPaymentsPlugin.heartbeat = new Heartbeat({ packageName: PKG_NAME, packageVersion: PKG_VERSION, licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY) });
+            HuloPaymentsPlugin.heartbeat = new Heartbeat({ packageName: PKG_NAME, packageVersion: PKG_VERSION, licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY), licenceKeyProvider: () => HuloPaymentsPlugin.currentLicenceKey() });
             HuloPaymentsPlugin.heartbeat.start();
         }
         configureRuntime({ hasPremiumAccess: () => HuloPaymentsPlugin.hasPremiumAccess(), publicBaseUrl: () => getOptions().publicBaseUrl, notifyOps, sendMail: sendOpsMail });

@@ -43,7 +43,7 @@ adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
   and `recentStats`.
 
 ### Changed
-- `@huloglobal/vendure-licence-sdk` `^0.15.0`.
+- `@huloglobal/vendure-licence-sdk` `^0.15.1`; the heartbeat reports the jti of the key currently in force (env key, admin activation or buy-from-admin claim), not only the boot-time one.
 - 402 responses carry `buyUrl: https://elite.charity/licence/buy/vendure-plugin-payments`;
   the admin UI turns any 402 (or `licence-required` body) into "<action>
   needs a licence — start the free trial or activate a key at the top of
