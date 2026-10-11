@@ -169,7 +169,7 @@ export class HuloPaymentMethodPanelComponent implements CustomDetailComponent, O
         const raw = this.detailForm?.value?.handler?.args;
         const out: Record<string, string> = {};
         if (Array.isArray(raw)) for (const a of raw) if (a && a.name) out[a.name] = a.value == null ? '' : String(a.value);
-        else if (raw && typeof raw === 'object') { const o = raw as Record<string, unknown>; for (const k of Object.keys(o)) out[k] = o[k] == null ? '' : String(o[k]); }
+        else if (raw && typeof raw === 'object') { const o = raw as unknown as Record<string, unknown>; for (const k of Object.keys(o)) out[k] = o[k] == null ? '' : String(o[k]); }
         return out;
     }
 

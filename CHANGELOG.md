@@ -5,6 +5,11 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-10-11
+
+### Fixed
+- Admin UI build error (TS2352) in the payment-method detail panel's handler-args reader under the Angular production compiler.
+
 ## [0.3.0] — 2026-10-11
 
 ### Added
