@@ -78,8 +78,8 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <div class="feature-line" *ngIf="meta.recentStats?.length"><strong>So far:</strong> {{ statsLine() }}</div>
                 </div>
                 <div class="actions eval-actions">
-                    <select [(ngModel)]="buyPlan" [disabled]="buying" class="plan-select"><option value="monthly">Monthly · 14-day free trial</option><option value="annual">Annual · 14-day free trial, 2 months free</option><option value="lifetime">Lifetime · one-off</option></select>
-                    <button class="gbtn gbtn-primary gbtn-sm" (click)="buyLicence()" [disabled]="buying">{{ buying ? 'Opening checkout…' : (buyPlan === 'lifetime' ? 'Buy lifetime →' : 'Start 14-day free trial →') }}</button>
+                    <select [(ngModel)]="buyPlan" [disabled]="buying" class="plan-select"><option value="monthly">Monthly</option><option value="annual">Annual · 2 months free</option><option value="lifetime">Lifetime · one-off</option></select>
+                    <button class="gbtn gbtn-primary gbtn-sm" (click)="buyLicence()" [disabled]="buying">{{ buying ? 'Opening checkout…' : (buyPlan === 'lifetime' ? 'Buy lifetime →' : (meta?.tier === 'trial' ? 'Subscribe — first charge when the evaluation ends →' : 'Subscribe →')) }}</button>
                     <span *ngIf="claim?.state === 'pending'" style="font-size:12.5px;font-weight:600">⏳ Waiting for checkout to finish — the licence installs itself. <a (click)="checkClaim(true)" style="cursor:pointer;text-decoration:underline">Check now</a></span>
                     <a href="https://huloglobal.com/vendure-plugins/payments/" target="_blank" class="gbtn gbtn-outline gbtn-sm">Details ↗</a>
                 </div>
@@ -93,7 +93,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
             <div class="update-banner major" *ngIf="meta.tier !== 'trial'">
                 <div>
                     <strong>🔓 Free tier</strong> — Stripe (cards, wallets, 3-D Secure, captures, refunds, disputes), bank transfer, pay-later, the hosted checkout page, the ledger and this dashboard stay active. The other eight providers, subscriptions, saved cards, pay-by-link, provider routing and surcharges need a licence.
-                    Start your <strong>14-day free trial</strong> below (card required, nothing charged until day 15, cancel any time) or buy a lifetime licence.
+                    Subscribe below (monthly or annual, cancel any time) or buy a lifetime licence.
                     <div class="feature-line" *ngIf="meta.premiumFeatures?.length">With a licence: {{ meta.premiumFeatures.join(' · ') }}</div>
                     <div class="feature-line" *ngIf="meta.recentStats?.length"><strong>{{ meta.eval?.source === 'server' ? 'During your evaluation:' : 'So far:' }}</strong> {{ statsLine() }}</div>
                 </div>
