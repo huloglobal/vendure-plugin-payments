@@ -110,7 +110,8 @@ export const stripeProvider: PaymentProvider = {
         const id = String(metadata?.paymentIntentId || metadata?.sessionId || '');
         if (!/^pi_[A-Za-z0-9]+$/.test(id)) return { state: 'Error', amount: 0, errorMessage: 'Missing or invalid paymentIntentId' };
         const pi = await stripe(args, `/payment_intents/${id}?expand[]=latest_charge`);
-        if (pi.metadata?.orderCode && pi.metadata.orderCode !== order.code) {
+        // Every intent this plugin creates (sessions and pay-by-link) carries metadata.orderCode.
+        if (String(pi.metadata?.orderCode || '') !== order.code) {
             return { state: 'Error', amount: 0, errorMessage: 'PaymentIntent belongs to a different order' };
         }
         if (String(pi.currency).toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };

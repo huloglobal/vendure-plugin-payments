@@ -40,7 +40,11 @@ export const coinbaseProvider: PaymentProvider = {
         if (!code) return { state: 'Error', amount: 0, errorMessage: 'Missing Coinbase charge code' };
         const r = await cb(args, `/charges/${encodeURIComponent(code)}`);
         const c = r.data || {};
-        if (c.metadata?.orderCode && c.metadata.orderCode !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Charge belongs to a different order' };
+        if (String(c.metadata?.orderCode || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Charge belongs to a different order' };
+        // The charge is priced in the order currency (fixed_price): it must be priced at this order's total.
+        const local = c.pricing?.local || {};
+        if (String(local.currency || '').toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
+        if (fromDecimalString(String(local.amount ?? ''), order.currencyCode) !== order.totalWithTax) return { state: 'Error', amount: 0, errorMessage: `Amount mismatch (charge ${local.amount}, order ${toDecimalString(order.totalWithTax, order.currencyCode)})` };
         const status = String((c.timeline || []).slice(-1)[0]?.status || 'NEW').toUpperCase();
         const meta = { chargeCode: code, public: { method: 'crypto' } };
         if (['COMPLETED', 'RESOLVED'].includes(status)) return { state: 'Settled', amount: order.totalWithTax, transactionId: code, metadata: meta };

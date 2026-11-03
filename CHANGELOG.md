@@ -5,6 +5,18 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — 2026-11-03
+
+### Security
+- **Provider confirmations are bound to the exact order, amount and currency.** A client-supplied provider reference could mark a different (or larger) order paid:
+  - Adyen: a completed Drop-in session of any order was accepted for any other order. The session's `reference` must now be the order code, and when Adyen reports the session's payments the authorised amount and currency must match the order.
+  - GoCardless: the billing request's order reference was optional and its amount/currency unchecked (a pending request for a smaller basket authorised the new total). Both are now required to match.
+  - Coinbase Commerce: the charge's price was never compared with the order and its order reference was optional; a completed charge for a smaller basket settled the order at its full total. Both now must match.
+  - Square: a payment looked up by `paymentId` was accepted for any order. Its `reference_id` and currency must now match.
+  - PayPal, Mollie, Braintree, Checkout.com, Stripe: the order reference check was skipped when the provider object had none (PayPal orders can be created in the browser with the public client id; Mollie payment-link payments carry no metadata). The reference is now mandatory (Mollie: metadata or the `Order <code>` description), PayPal orders must have exactly one purchase unit, Braintree and Checkout.com currencies are checked.
+- **Webhook confirmations must cover the payment.** A `payment.authorized` / `payment.settled` event whose amount or currency differs from the Authorized Vendure payment no longer settles it; a `failure` ledger row and an ops notification (`payments.amount_mismatch`) are written instead. An Adyen session payment, recorded at the order total before its AUTHORISATION arrives, is only settled by an AUTHORISATION for that amount.
+- **Surcharges follow the method actually charged.** The payment handler refuses a payment whose `hulo-surcharge:` line is not exactly the fee configured for the payment method being charged (no fee, another method's fee, or a fee computed on an older basket). `huloCreatePaymentSession` and the hosted checkout page now apply the chosen method's fee before creating the provider session, so the session amount includes it; storefronts that add a payment without a session must call `huloApplyPaymentSurcharge` with the method they pay with. Webhook-recorded pay-by-link payments are not re-checked.
+
 ## [0.3.2] — 2026-10-28
 
 ### Changed

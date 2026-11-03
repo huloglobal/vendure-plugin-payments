@@ -9,6 +9,7 @@ import { LedgerService, loggerCtx } from './ledger.service';
 import { getRuntime, requirePremium } from './runtime';
 import { clearSettledByWebhook, markSettledByWebhook, registerWebhookPayment } from './handlers';
 import { request } from './rest';
+import { SURCHARGE_SKU_PREFIX, huloSurcharges, surchargeAmount, surchargeMatches, surchargeRule } from './surcharge';
 import { ensureMollieCustomer } from '../providers/mollie';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 
@@ -92,6 +93,7 @@ export class PaymentsService {
         const subscription = this.subscriptions.orderHasSubscriptionLines(order);
         if (subscription) requirePremium('Subscriptions');
         if (opts.savePaymentMethod || opts.savedMethodId) requirePremium('Saved payment methods');
+        order = await this.ensureSurchargeFor(ctx, order, handlerCode, method.paymentMethodCode || methodCode);
         const settings = await this.ledger.getSettings(ctx.channelId as number);
         const wantsCustomer = !!(opts.savePaymentMethod || opts.savedMethodId || subscription || (settings.saveCardsDefault && getRuntime().hasPremiumAccess() && order.customer?.user));
         let providerCustomerRef: string | undefined;
@@ -159,18 +161,27 @@ export class PaymentsService {
         requirePremium('Payment surcharges');
         const settings = await this.ledger.getSettings(ctx.channelId as number);
         const handlerCode = await this.handlerCodeFor(methodCode, ctx.channelId as number).catch(() => methodCode);
-        const rule = settings.surcharges[handlerCode] || settings.surcharges[methodCode] || null;
-        for (const s of order.surcharges || []) {
-            if (String(s.sku || '').startsWith('hulo-surcharge:')) await this.orderService.removeSurchargeFromOrder(ctx, order.id, s.id);
-        }
-        if (rule && rule.value > 0) {
-            const base = order.totalWithTax - (order.surcharges || []).filter(s => String(s.sku || '').startsWith('hulo-surcharge:')).reduce((n, s) => n + s.priceWithTax, 0);
-            const amount = rule.type === 'percent' ? Math.round(base * rule.value / 100) : Math.round(rule.value);
-            if (amount > 0) {
-                await this.orderService.addSurchargeToOrder(ctx, order.id, { description: rule.label || `${methodCode} payment fee`, listPrice: amount, listPriceIncludesTax: true, sku: `hulo-surcharge:${methodCode}`, taxLines: [] } as any);
-            }
+        const rule = surchargeRule(settings.surcharges, handlerCode, methodCode);
+        const amount = surchargeAmount(rule, order);
+        for (const s of huloSurcharges(order)) await this.orderService.removeSurchargeFromOrder(ctx, order.id, s.id);
+        if (amount > 0) {
+            await this.orderService.addSurchargeToOrder(ctx, order.id, { description: rule!.label || `${methodCode} payment fee`, listPrice: amount, listPriceIncludesTax: true, sku: `${SURCHARGE_SKU_PREFIX}${methodCode}`, taxLines: [] } as any);
         }
         return (await this.orderService.findOne(ctx, order.id)) as Order;
+    }
+
+    /**
+     * Put the fee of the method a session is being created for on the order (and drop any other
+     * method's fee) so the provider session is created for the right amount; the handler refuses
+     * a payment whose fee does not match the method charged.
+     */
+    private async ensureSurchargeFor(ctx: RequestContext, order: Order, handlerCode: string, methodCode: string): Promise<Order> {
+        if (!getRuntime().hasPremiumAccess()) return order;
+        const settings = await this.ledger.getSettings(ctx.channelId as number);
+        const rule = surchargeRule(settings.surcharges, handlerCode, methodCode);
+        if (surchargeMatches(rule, order, methodCode)) return order;
+        await this.applySurcharge(ctx, order, methodCode);
+        return (await this.orderService.findOne(ctx, order.id, ['lines', 'lines.productVariant', 'customer', 'customer.groups', 'surcharges', 'payments', 'channels'])) || order;
     }
 
     // ── Webhook application ─────────────────────────────────────────────
@@ -215,6 +226,16 @@ export class PaymentsService {
             ?? live.find(p => ev.paymentRef && String(p.transactionId).startsWith('adyen-session:') && p.state === 'Authorized')
             ?? (!ev.paymentRef ? live[0] : undefined);
 
+        // A provider confirmation only settles the Vendure payment it covers: same currency, same amount.
+        // (An Adyen session payment is recorded at the order total before the AUTHORISATION arrives.)
+        if (order && payment && (ev.type === 'payment.authorized' || ev.type === 'payment.settled') && payment.state === 'Authorized'
+            && ev.amount != null && ev.currency && (ev.currency.toUpperCase() !== order.currencyCode || Number(ev.amount) !== Number(payment.amount))) {
+            const reason = `amount mismatch: provider ${ev.amount} ${ev.currency}, payment ${payment.amount} ${order.currencyCode}`;
+            Logger.warn(`${providerCode} ${ev.type} for ${order.code} not applied — ${reason}`, loggerCtx);
+            await rec('failure', 'failed', { reason });
+            void getRuntime().notifyOps({ kind: 'payments.amount_mismatch', subject: `${provider.name} confirmed a different amount on order ${order.code}`, text: `${provider.name} reported ${ev.type} for ${ev.amount} ${ev.currency} (ref ${ev.paymentRef || '?'}) but the Vendure payment is ${payment.amount} ${order.currencyCode}. The payment was left Authorized; check it in the provider dashboard before fulfilling.`, orderCode: order.code, channelId });
+            return;
+        }
         switch (ev.type) {
             case 'payment.authorized': {
                 if (!order) { await rec('authorize', 'ok'); return; }

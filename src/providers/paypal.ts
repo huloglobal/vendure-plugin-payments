@@ -108,9 +108,11 @@ export const paypalProvider: PaymentProvider = {
         if (!id) return { state: 'Error', amount: 0, errorMessage: 'Missing paypalOrderId' };
         let o = await paypal(args, `/v2/checkout/orders/${encodeURIComponent(id)}`);
         const unit = o.purchase_units?.[0];
-        if (unit?.custom_id && unit.custom_id !== order.code) return { state: 'Error', amount: 0, errorMessage: 'PayPal order belongs to a different order' };
-        if (unit?.amount?.currency_code && unit.amount.currency_code !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
-        if (unit?.amount?.value && toDecimalString(order.totalWithTax, order.currencyCode) !== String(unit.amount.value)) return { state: 'Error', amount: 0, errorMessage: 'Amount mismatch' };
+        // PayPal orders can be created in the browser with the public client id, so the binding is
+        // mandatory: one purchase unit, our custom_id, this order's amount and currency.
+        if ((o.purchase_units || []).length !== 1 || String(unit?.custom_id || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'PayPal order belongs to a different order' };
+        if (unit.amount?.currency_code !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
+        if (toDecimalString(order.totalWithTax, order.currencyCode) !== String(unit.amount?.value)) return { state: 'Error', amount: 0, errorMessage: 'Amount mismatch' };
         const intent = String(o.intent || 'CAPTURE');
         if (o.status === 'APPROVED') {
             o = await paypal(args, `/v2/checkout/orders/${encodeURIComponent(id)}/${intent === 'AUTHORIZE' ? 'authorize' : 'capture'}`, { json: {}, idempotencyKey: idem('hulo-pp-final', id) });

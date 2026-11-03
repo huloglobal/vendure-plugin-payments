@@ -86,7 +86,9 @@ export const mollieProvider: PaymentProvider = {
         const id = String(metadata?.molliePaymentId || metadata?.sessionId || '');
         if (!/^tr_[A-Za-z0-9]+$/.test(id)) return { state: 'Error', amount: 0, errorMessage: 'Missing or invalid Mollie payment id' };
         const p = await mollie(args, `/payments/${id}`);
-        if (p.metadata?.orderCode && p.metadata.orderCode !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Mollie payment belongs to a different order' };
+        // Session payments carry metadata.orderCode; payment-link payments only their description ("Order <code> — …").
+        const owner = p.metadata?.orderCode ? String(p.metadata.orderCode) : (String(p.description || '').match(/^Order ([A-Za-z0-9_-]+)(?:\s|$)/) || [])[1];
+        if (owner !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Mollie payment belongs to a different order' };
         if (p.amount?.currency !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
         if (toDecimalString(order.totalWithTax, order.currencyCode) !== String(p.amount?.value)) return { state: 'Error', amount: 0, errorMessage: 'Amount mismatch' };
         const meta = { molliePaymentId: p.id, method: p.method || null, customerId: p.customerId || null, mandateId: p.mandateId || null, public: { method: p.method || 'mollie', last4: p.details?.cardNumber?.slice(-4) || null } };

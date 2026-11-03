@@ -6,6 +6,7 @@ import { ConfigArgs } from '@vendure/core/dist/common/configurable-operation';
 import { PaymentProvider, ProviderArgs, ProviderCode } from './provider';
 import { LedgerService, loggerCtx } from './ledger.service';
 import { getRuntime } from './runtime';
+import { surchargeMatches, surchargeRule } from './surcharge';
 
 let ledger: LedgerService | null = null;
 
@@ -180,7 +181,7 @@ export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
             try { ledger = injector.get(LedgerService); } catch { ledger = null; }
         },
 
-        async createPayment(ctx, order, amount, args, metadata): Promise<CreatePaymentResult | CreatePaymentErrorResult> {
+        async createPayment(ctx, order, amount, args, metadata, method): Promise<CreatePaymentResult | CreatePaymentErrorResult> {
             if (!provider.freeTier && !getRuntime().hasPremiumAccess()) {
                 return { amount, state: 'Error', errorMessage: `${provider.name} needs a HULO Payments licence`, metadata };
             }
@@ -190,6 +191,18 @@ export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
             delete md.webhook;
             const facts = takeWebhookPayment(order.code, md.pspReference);
             if (facts) md.webhook = facts; else delete md.pspReference;
+            // The payment fee is the one of the method being charged here, not whichever method the
+            // client passed to huloApplyPaymentSurcharge. (Webhook-recorded pay-by-link payments carry
+            // the amount the admin set on the link and are not re-checked.)
+            if (!facts && ledger && getRuntime().hasPremiumAccess()) {
+                const methodCode = String((method as any)?.code || provider.code);
+                const settings = await ledger.getSettings(ctx.channelId as number);
+                const rule = surchargeRule(settings.surcharges, provider.code, methodCode);
+                if (!surchargeMatches(rule, order, methodCode)) {
+                    Logger.warn(`${provider.code} payment for ${order.code} refused: payment fee does not match method ${methodCode}`, loggerCtx);
+                    return { amount, state: 'Error', errorMessage: `The payment fee on this order does not match ${provider.name} — apply it with huloApplyPaymentSurcharge(methodCode: "${methodCode}") or create the payment session again`, metadata: {} };
+                }
+            }
             let outcome;
             try {
                 outcome = await provider.confirmPayment(ctx, order, args as ProviderArgs, md);

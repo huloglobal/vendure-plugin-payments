@@ -6,6 +6,7 @@ import { initialData } from '../../../e2e-shared/initial-data';
 import { HuloPaymentsPlugin } from '../src/plugin';
 import { LedgerService } from '../src/core/ledger.service';
 import { SubscriptionService } from '../src/subscriptions/subscription.service';
+import { configureRuntime, getRuntime } from '../src/core/runtime';
 
 /**
  * Boots a real Vendure server with the plugin on MariaDB and exercises the
@@ -218,5 +219,88 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         const list = await subs().list({});
         expect(list.totalItems).toBe(0);
         expect((await subs().stats()).active).toBe(0);
+    });
+    // ── 0.3.3: surcharge follows the method charged; provider confirmations bound to the payment ──
+    const shopClient = () => {
+        let token = '';
+        return async (query: string, variables?: any) => {
+            const res = await fetch(`${BASE}/shop-api`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ query, variables }) });
+            const t = res.headers.get('vendure-auth-token'); if (t) token = t;
+            const json: any = await res.json(); if (json.errors) throw new Error(json.errors.map((e: any) => e.message).join('; '));
+            return json.data;
+        };
+    };
+    const orderToArrangingPayment = async (shop: ReturnType<typeof shopClient>, email: string) => {
+        const v: any = await adminClient.query(gql`{ productVariants(options: { filter: { sku: { eq: "STG-1" } } }) { items { id } } }`);
+        await shop(`mutation($id: ID!) { addItemToOrder(productVariantId: $id, quantity: 1) { ... on Order { code } } }`, { id: v.productVariants.items[0].id });
+        await shop(`mutation($e: String!) { setCustomerForOrder(input: { emailAddress: $e, firstName: "Fee", lastName: "Tester" }) { ... on Order { code } } }`, { e: email });
+        await shop(`mutation { setOrderShippingAddress(input: { fullName: "Fee Tester", streetLine1: "1 Test St", city: "London", postalCode: "SW1A 1AA", countryCode: "GB" }) { ... on Order { code } } }`);
+        const m: any = await shop(`{ eligibleShippingMethods { id } }`);
+        await shop(`mutation($id: [ID!]!) { setOrderShippingMethod(shippingMethodId: $id) { ... on Order { code } } }`, { id: [m.eligibleShippingMethods[0].id] });
+        const t: any = await shop(`mutation { transitionOrderToState(state: "ArrangingPayment") { ... on Order { state code totalWithTax currencyCode } ... on ErrorResult { errorCode message } } }`);
+        expect(t.transitionOrderToState.state).toBe('ArrangingPayment');
+        return t.transitionOrderToState as { code: string; totalWithTax: number; currencyCode: string };
+    };
+    /** Surcharges and Adyen are licensed features: run these with premium access on. */
+    let licensed: (() => boolean) | null = null;
+    beforeEach(() => { licensed = getRuntime().hasPremiumAccess; configureRuntime({ hasPremiumAccess: () => true }); });
+    afterEach(() => { if (licensed) configureRuntime({ hasPremiumAccess: licensed }); });
+    const ADD_PAYMENT = `mutation($m: String!, $md: JSON!) { addPaymentToOrder(input: { method: $m, metadata: $md }) {
+        ... on Order { state totalWithTax payments { amount state method } } ... on ErrorResult { errorCode message } ... on PaymentFailedError { paymentErrorMessage } } }`;
+
+    it('charges the fee of the method actually used, not the one the client applied', async () => {
+        await adminClient.query(gql`mutation { createPaymentMethod(input: { code: "later", enabled: true, translations: [{ languageCode: en, name: "Pay later" }], handler: { code: "hulo-pay-later", arguments: [{ name: "termsDays", value: "30" }, { name: "instructions", value: "" }] } }) { id } }`);
+        const base = await ledger().getSettings(1);
+        await ledger().saveSettings({ ...base, channelId: 1, surcharges: { 'hulo-bank-transfer': { type: 'fixed', value: 250, label: 'Bank handling fee' } } } as any);
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'fee@example.test');
+        // Client applies the fee-free method's surcharge, then pays by bank transfer.
+        const applied: any = await shop(`mutation { huloApplyPaymentSurcharge(methodCode: "later") { totalWithTax surcharges { sku priceWithTax } } }`);
+        expect(applied.huloApplyPaymentSurcharge.totalWithTax).toBe(order.totalWithTax);
+        const bypass: any = await shop(ADD_PAYMENT, { m: 'bank', md: {} });
+        expect(bypass.addPaymentToOrder.errorCode).toBe('PAYMENT_FAILED_ERROR');
+        expect(bypass.addPaymentToOrder.paymentErrorMessage).toMatch(/payment fee/);
+        // Creating the session for the method puts its fee on the order; the payment then covers it.
+        const sess: any = await shop(`mutation { huloCreatePaymentSession(methodCode: "bank") { amount provider } }`);
+        expect(sess.huloCreatePaymentSession.amount).toBe(order.totalWithTax + 250);
+        const paid: any = await shop(ADD_PAYMENT, { m: 'bank', md: {} });
+        expect(paid.addPaymentToOrder.state).toBe('PaymentAuthorized');
+        expect(paid.addPaymentToOrder.totalWithTax).toBe(order.totalWithTax + 250);
+        expect(paid.addPaymentToOrder.payments.find((p: any) => p.state === 'Authorized').amount).toBe(order.totalWithTax + 250);
+        await ledger().saveSettings({ ...base, channelId: 1, surcharges: {} } as any);
+    });
+
+    it('an Adyen AUTHORISATION for less than the payment does not settle it', async () => {
+        const hmacKey = '44782DEF547AAA06C910C43932B1EB0C71FC68D9D0C057550C48EC2ACF6BA056';
+        await adminClient.query(gql`mutation($h: String!) { createPaymentMethod(input: { code: "adyen", enabled: true, translations: [{ languageCode: en, name: "Adyen" }], handler: { code: "hulo-adyen", arguments: [
+            { name: "apiKey", value: "test_key" }, { name: "merchantAccount", value: "HuloECOM" }, { name: "clientKey", value: "test_ck" }, { name: "hmacKey", value: $h },
+            { name: "environment", value: "test" }, { name: "liveUrlPrefix", value: "" }, { name: "captureMode", value: "immediate" }, { name: "webhookUser", value: "" }, { name: "webhookPassword", value: "" } ] } }) { id } }`, { h: hmacKey });
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'adyen@example.test');
+        const realFetch = globalThis.fetch;
+        // Adyen test API stub: the session is this order's and completed, with no payments list.
+        (globalThis as any).fetch = async (url: any, init: any) => String(url).startsWith('https://checkout-test.adyen.com/')
+            ? new Response(JSON.stringify({ id: 'CS_E2E', status: 'completed', reference: order.code }), { status: 200 })
+            : realFetch(url, init);
+        try {
+            const r: any = await shop(ADD_PAYMENT, { m: 'adyen', md: { sessionId: 'CS_E2E', sessionResult: 'res' } });
+            expect(r.addPaymentToOrder.state).toBe('PaymentAuthorized');
+        } finally { (globalThis as any).fetch = realFetch; }
+        const notify = async (value: number, psp: string) => {
+            const it: any = { pspReference: psp, originalReference: '', merchantAccountCode: 'HuloECOM', merchantReference: order.code, amount: { value, currency: order.currencyCode }, eventCode: 'AUTHORISATION', success: 'true', additionalData: {} };
+            it.additionalData.hmacSignature = createHmac('sha256', Buffer.from(hmacKey, 'hex')).update([it.pspReference, it.originalReference, it.merchantAccountCode, it.merchantReference, it.amount.value, it.amount.currency, it.eventCode, it.success].join(':')).digest('base64');
+            const res = await fetch(`${BASE}/hulo-payments/webhook/hulo-adyen`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ live: 'false', notificationItems: [{ NotificationRequestItem: it }] }) });
+            expect(res.status).toBe(200);
+        };
+        await notify(100, 'PSP_SMALL');
+        const byCode = async () => (await adminClient.query(gql`query($c: String!) { orders(options: { filter: { code: { eq: $c } } }) { items { state payments { state transactionId amount } } } }`, { c: order.code }) as any).orders.items[0];
+        expect((await byCode()).state).toBe('PaymentAuthorized');
+        expect((await byCode()).payments[0].state).toBe('Authorized');
+        expect((await ledger().list({ kind: 'failure' })).items.some((x: any) => x.orderCode === order.code && /amount mismatch/.test(x.reason || ''))).toBe(true);
+        // The AUTHORISATION for the full amount settles it.
+        await notify(order.totalWithTax, 'PSP_FULL');
+        const after = await byCode();
+        expect(after.state).toBe('PaymentSettled');
+        expect(after.payments[0]).toMatchObject({ state: 'Settled', transactionId: 'PSP_FULL' });
     });
 });

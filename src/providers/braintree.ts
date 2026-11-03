@@ -76,8 +76,10 @@ export const braintreeProvider: PaymentProvider = {
 
 function outcome(t: any, order: Order): PaymentOutcome {
     if (!t) return { state: 'Error', amount: 0, errorMessage: 'Braintree returned no transaction' };
-    if (t.orderId && t.orderId !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Transaction belongs to a different order' };
-    const amount = t.amount?.value ? fromDecimalString(t.amount.value, order.currencyCode) : order.totalWithTax;
+    // Transactions are created with `orderId: order.code`; a client-supplied transaction id must be one of those.
+    if (String(t.orderId || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Transaction belongs to a different order' };
+    if (t.amount?.currencyCode && String(t.amount.currencyCode).toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
+    const amount = t.amount?.value ? fromDecimalString(t.amount.value, order.currencyCode) : 0;
     const meta = { transactionId: t.id, public: { method: 'braintree' } };
     if (['SUBMITTED_FOR_SETTLEMENT', 'SETTLING', 'SETTLED', 'SETTLEMENT_PENDING'].includes(t.status)) return { state: 'Settled', amount, transactionId: t.id, metadata: meta };
     if (t.status === 'AUTHORIZED') return { state: 'Authorized', amount, transactionId: t.id, metadata: { ...meta, capture: 'manual' } };

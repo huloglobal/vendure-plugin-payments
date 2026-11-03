@@ -60,8 +60,9 @@ export const checkoutComProvider: PaymentProvider = {
         }
         if (!paymentId) return { state: 'Error', amount: 0, errorMessage: 'Missing Checkout.com payment id' };
         const p = await cko(args, `/payments/${paymentId}`);
-        if (p.reference && p.reference !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Payment belongs to a different order' };
-        if (p.currency && p.currency !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
+        // Hosted pages and payment links are created with `reference: order.code`; anything else is another order's payment.
+        if (String(p.reference || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Payment belongs to a different order' };
+        if (String(p.currency || '').toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
         const amount = fromProviderMinor(Number(p.amount || 0), order.currencyCode);
         const meta = { paymentId: p.id, scheme: p.source?.scheme || null, last4: p.source?.last4 || null, public: { method: p.source?.type || 'card', last4: p.source?.last4 || null } };
         if (['Captured', 'Paid'].includes(p.status)) return { state: 'Settled', amount, transactionId: p.id, metadata: meta };

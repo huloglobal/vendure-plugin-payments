@@ -145,12 +145,26 @@ export const adyenProvider: PaymentProvider = {
         }
         const s = await adyen(args, `/sessions/${encodeURIComponent(sessionId)}?sessionResult=${encodeURIComponent(sessionResult)}`);
         const status = String(s.status || '');
+        // The session must be the one created for THIS order (createSession sets `reference: order.code`):
+        // a completed session of a cheaper order must not mark this one paid.
+        if (String(s.reference || '') !== order.code) {
+            return { state: 'Error', amount: 0, transactionId: `adyen-session:${sessionId}`, errorMessage: 'Adyen session belongs to a different order' };
+        }
+        // Where Adyen reports the session's payments, the authorised one must cover this order exactly
+        // (a session created before the basket grew is refused). Otherwise the AUTHORISATION
+        // notification's amount is checked before the payment settles (PaymentsService.applyEvent).
+        const authorised = ((s.payments || []) as any[]).filter(p => /^(Authorised|Received|Pending)$/i.test(String(p?.resultCode || '')));
+        const expected = toProviderMinor(order.totalWithTax, order.currencyCode);
+        if (authorised.length && !authorised.some(p => Number(p?.amount?.value) === expected && String(p?.amount?.currency || '').toUpperCase() === order.currencyCode)) {
+            return { state: 'Error', amount: 0, transactionId: `adyen-session:${sessionId}`, errorMessage: 'Adyen session amount or currency does not match the order' };
+        }
+        const psp = authorised.find(p => Number(p?.amount?.value) === expected)?.pspReference;
         // sessionResult is kept so the handler's settle-time re-probe can ask Adyen for the session status again.
         const meta = { sessionId, sessionResult, sessionStatus: status, captureMode, public: { method: metadata?.paymentMethodType || 'adyen' } };
         if (status === 'completed') {
             // pspReference + amount arrive on the AUTHORISATION webhook; until
             // then the payment is Authorized against the session.
-            return { state: 'Authorized', amount: order.totalWithTax, transactionId: metadata?.pspReference ? String(metadata.pspReference) : `adyen-session:${sessionId}`, metadata: meta };
+            return { state: 'Authorized', amount: order.totalWithTax, transactionId: psp ? String(psp) : `adyen-session:${sessionId}`, metadata: meta };
         }
         if (status === 'paymentPending') return { state: 'Authorized', amount: order.totalWithTax, transactionId: `adyen-session:${sessionId}`, metadata: { ...meta, pending: true } };
         return { state: 'Declined', amount: 0, transactionId: `adyen-session:${sessionId}`, errorMessage: `Adyen session ${status || 'unknown'}`, metadata: meta };

@@ -54,7 +54,11 @@ export const gocardlessProvider: PaymentProvider = {
         if (!/^BRQ/.test(id)) return { state: 'Error', amount: 0, errorMessage: 'Missing GoCardless billing request id' };
         const r = await gc(args, `/billing_requests/${id}`);
         const br = r.billing_requests;
-        if (br.metadata?.orderCode && br.metadata.orderCode !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Billing request belongs to a different order' };
+        if (String(br.metadata?.orderCode || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Billing request belongs to a different order' };
+        // A billing request created before the basket changed must not authorise the new total.
+        const pr = br.payment_request || {};
+        if (String(pr.currency || '').toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
+        if (Number(pr.amount) !== toProviderMinor(order.totalWithTax, order.currencyCode)) return { state: 'Error', amount: 0, errorMessage: `Amount mismatch (billing request ${pr.amount}, order ${toProviderMinor(order.totalWithTax, order.currencyCode)})` };
         const meta = { billingRequestId: id, paymentId: br.payment_request?.links?.payment || null, mandateId: br.mandate_request?.links?.mandate || br.links?.mandate_request_mandate || null, customerId: br.links?.customer || null, public: { method: 'bank-debit' } };
         if (br.status === 'fulfilled' && meta.paymentId) {
             const p = await gc(args, `/payments/${meta.paymentId}`);

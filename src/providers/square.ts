@@ -82,6 +82,9 @@ export const squareProvider: PaymentProvider = {
 
 function outcome(p: any, order: Order): PaymentOutcome {
     if (!p) return { state: 'Error', amount: 0, errorMessage: 'Square returned no payment' };
+    // A payment id can come from the client: it must be a payment taken for THIS order, in its currency.
+    if (String(p.reference_id || '') !== order.code) return { state: 'Error', amount: 0, errorMessage: 'Square payment belongs to a different order' };
+    if (String(p.amount_money?.currency || '').toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
     const meta = { paymentId: p.id, cardBrand: p.card_details?.card?.card_brand || null, last4: p.card_details?.card?.last_4 || null, public: { method: p.source_type?.toLowerCase() || 'card', last4: p.card_details?.card?.last_4 || null } };
     const amount = fromProviderMinor(Number(p.amount_money?.amount || 0), order.currencyCode);
     if (p.status === 'COMPLETED') return { state: 'Settled', amount, transactionId: p.id, metadata: meta };
