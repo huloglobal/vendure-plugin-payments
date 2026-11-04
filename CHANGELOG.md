@@ -162,6 +162,21 @@ Reliability and security pass — no new features. Two columns on
 `hulo_payment_txn` and a best-effort index on Vendure's `payment` table are
 added on boot; nothing to migrate.
 
+### Security
+- **Hosted checkout page.** Values embedded in the page script are
+  serialised so they can never close the script block; `returnUrl` and
+  `cancelUrl` must be absolute http(s) URLs (optionally restricted with the
+  new `hostedReturnHosts` option); `methodCode` and `locale` are validated;
+  client metadata is allow-listed and server-side session ids win; provider
+  and Vendure error text no longer reaches the customer; clickjacking and
+  referrer headers are set; each link allows at most 30 provider sessions;
+  expiry is stored as a date (no UTC/local drift); expired rows are purged.
+- **Permissions and scoping.** Self-update and licence activate/deactivate
+  need SuperAdmin; admins in a non-default channel only see and act on that
+  channel's ledger, settings, methods and connections; settings, pay-link
+  return URLs, days and e-mails are validated; short secrets are fully
+  redacted; the licence lead request times out after 8 s.
+
 ### Fixed
 - **Webhook-created payments.** Payments recorded from a webhook (pay-by-link
   completion, a redirect-flow `payment.settled` arriving before the customer
@@ -190,14 +205,6 @@ added on boot; nothing to migrate.
   arithmetic instead of 30/365 days. The plugin registers `ScheduleModule`
   itself, so renewals run on hosts that never wired it; `disableScheduler`
   is honoured.
-- **Hosted checkout page.** Values embedded in the page script are
-  serialised so they can never close the script block; `returnUrl` and
-  `cancelUrl` must be absolute http(s) URLs (optionally restricted with the
-  new `hostedReturnHosts` option); `methodCode` and `locale` are validated;
-  client metadata is allow-listed and server-side session ids win; provider
-  and Vendure error text no longer reaches the customer; clickjacking and
-  referrer headers are set; each link allows at most 30 provider sessions;
-  expiry is stored as a date (no UTC/local drift); expired rows are purged.
 - **Postgres.** Raw queries on Vendure tables quote their camelCase columns
   (`channelId`, `paymentMethodId`, `transactionId`, `orderId`); the
   subscription updater no longer quotes the plugin's own columns; the
@@ -209,11 +216,6 @@ added on boot; nothing to migrate.
   equals `order.totalWithTax` and the webhook accepts it; **GoCardless
   refunds** send the required `total_amount_confirmation`; refund
   idempotency keys are per minute, not per second.
-- **Permissions and scoping.** Self-update and licence activate/deactivate
-  need SuperAdmin; admins in a non-default channel only see and act on that
-  channel's ledger, settings, methods and connections; settings, pay-link
-  return URLs, days and e-mails are validated; short secrets are fully
-  redacted; the licence lead request times out after 8 s.
 - Ops alerts never hold a webhook response (dispute alerts are
   fire-and-forget), use one pooled SMTP transport with timeouts and log
   non-2xx replies. `ALTER TABLE … IF NOT EXISTS` is replaced by an
