@@ -1,4 +1,4 @@
-<p align="center"><a href="https://huloglobal.com/vendure-plugins/payments/"><img src="https://huloglobal.com/vendure-plugins/logos/payments.svg" width="96" height="96" alt="HULO Payments logo"></a></p>
+<p align="center"><a href="https://huloglobal.com/vendure-plugins/payments/"><img src="https://huloglobal.com/vendure-plugins/logos/payments.svg?v=2" width="96" height="96" alt="HULO Payments logo"></a></p>
 
 # @huloglobal/vendure-plugin-payments
 

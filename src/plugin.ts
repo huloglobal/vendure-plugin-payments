@@ -238,7 +238,7 @@ export class HuloPaymentsPlugin {
         this.eventBus.ofType(PaymentMethodEvent).subscribe(() => clearCredentialCache());
         if (HuloPaymentsPlugin.licenceStatus?.valid) return;
         try {
-            const store = new LicenceStore((sql, params) => adapterFor(this.connection.rawConnection).query(sql, params));
+            const store = new LicenceStore((sql, params, opts) => adapterFor(this.connection.rawConnection).query(sql, params, opts));
             await store.ensureTable();
             const stored = await store.load(PLUGIN_ID);
             if (stored) {

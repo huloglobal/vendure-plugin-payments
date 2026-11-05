@@ -5,6 +5,15 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — 2026-11-04
+
+### Fixed
+- **PostgreSQL: a renewal is charged once.** With licence SDK 0.15.3 or older, the claims that stop double processing always looked successful on Postgres. The hourly renewal job and an admin "run now" could both charge the same subscription renewal, and two overlapping completions of one hosted checkout link could both run. The plugin now requires licence SDK `^0.15.4`, and each goes through once. The first weekly report is no longer skipped either (it used to start a week late). MySQL and MariaDB were not affected.
+- **PostgreSQL: a licence key activated in the admin is now stored.** The plugin's licence store left out the conflict column that the Postgres upsert needs, so saving a key failed. Pasting a key into the admin applied it, answered with a server error and did not store it, so the plugin was unlicensed again after a restart. A key bought from the admin, which installs itself, was not stored either. MySQL and MariaDB were not affected.
+
+### Package metadata
+- A shorter `description` that npm shows in full (npm cuts descriptions at 255 characters).
+
 ## [0.3.4] — 2026-11-04
 
 ### Documentation

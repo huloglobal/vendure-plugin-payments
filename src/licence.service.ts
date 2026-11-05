@@ -20,7 +20,7 @@ export class HuloPaymentsLicenceService {
         return adapterFor(this.connection.rawConnection);
     }
 
-    private licenceStore = new LicenceStore((sql, params) => this.db.query(sql, params));
+    private licenceStore = new LicenceStore((sql, params, opts) => this.db.query(sql, params, opts));
 
     private purchaseClaim: PurchaseClaimClient | null = null;
 
