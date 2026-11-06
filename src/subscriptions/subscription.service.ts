@@ -325,7 +325,8 @@ export class SubscriptionService implements OnModuleInit {
             case 'subscription.payment_failed':
                 await this.update(sub.id, { status: 'past_due', failures: sub.failures + 1 });
                 await this.ledger.record({ channelId: sub.channelId, provider: providerCode, kind: 'renewal', status: 'failed', orderId: sub.orderId, orderCode: sub.orderCode, paymentRef: ev.paymentRef || ev.subscriptionRef, amount: ev.amount ?? sub.amount * sub.quantity, currency: ev.currency || sub.currency, reason: ev.reason || 'renewal payment failed', meta: { subscriptionId: sub.id } });
-                await getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `Renewal failed: ${sub.variantName} for ${sub.customerEmail}`, text: `${providerCode} could not collect the renewal for subscription ${sub.providerSubscriptionRef} (order ${sub.orderCode})${ev.reason ? `: ${ev.reason}` : ''}.`, orderCode: sub.orderCode, channelId: sub.channelId });
+                // Not awaited: the provider's webhook reply must not wait for the ops e-mail (notifyOps never rejects).
+                void getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `Renewal failed: ${sub.variantName} for ${sub.customerEmail}`, text: `${providerCode} could not collect the renewal for subscription ${sub.providerSubscriptionRef} (order ${sub.orderCode})${ev.reason ? `: ${ev.reason}` : ''}.`, orderCode: sub.orderCode, channelId: sub.channelId });
                 return;
             case 'subscription.canceled':
                 await this.update(sub.id, { status: 'canceled', cancelAtPeriodEnd: 0, nextChargeAt: null });

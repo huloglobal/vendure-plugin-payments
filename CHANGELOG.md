@@ -5,6 +5,12 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — 2026-11-05
+
+### Fixed
+- **Ops e-mails and the weekly report failed when the mail server was slow to greet.** The plugin's SMTP transport allowed 5 seconds to connect and 5 seconds for the server's greeting. A mail server may hold its greeting while it checks the sending host's reverse DNS (Gmail has taken just over 5 seconds), so the weekly report and ops e-mails (disputes, failed renewals) failed with "Greeting never received". Connecting and the greeting now get 30 seconds each, and a whole send may take 60 seconds instead of 12. The socket idle timeout is 45 seconds instead of 10. It also runs while the server has not greeted yet, so it is longer than the greeting timeout, and a server that never greets is still reported as "Greeting never received" rather than a bare "Timeout". The ops webhook was not affected.
+- **A failed-renewal webhook no longer waits for the ops e-mail.** When Stripe, PayPal or Mollie reported a failed renewal (`subscription.payment_failed`), the plugin answered the provider only after the ops alert (webhook and e-mail) had gone out, so a slow or unreachable mail server could hold the reply past the provider's timeout. The provider then showed a failed delivery and sent the event again (it was not applied twice). The alert is now sent in the background, as dispute and amount-mismatch alerts already were. The subscription is still marked past due and the failure recorded before the reply.
+
 ## [0.3.6] — 2026-11-05
 
 ### Package metadata

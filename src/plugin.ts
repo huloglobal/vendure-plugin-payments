@@ -92,7 +92,13 @@ for (const p of [stripeProvider, adyenProvider, paypalProvider, mollieProvider, 
 /** SMTP_SERVER (or SMTP_HOST) is set — the only thing ops e-mail and the weekly report need. */
 function smtpConfigured(): boolean { return !!(process.env.SMTP_SERVER || process.env.SMTP_HOST); }
 
-/** One pooled SMTP transport with timeouts (nodemailer's defaults are 2 min connect / 10 min socket). */
+/**
+ * One pooled SMTP transport with timeouts (nodemailer's defaults are 2 min connect / 10 min socket).
+ * Connect and greeting get 30 s: a server may hold its greeting while it checks the sender's
+ * reverse DNS (Gmail has taken just over 5 s). The socket idle timer runs during the greeting
+ * wait, so it must be longer, or a server that never greets fails with a bare "Timeout" instead
+ * of "Greeting never received".
+ */
 let opsTransport: { key: string; t: any } | null = null;
 function opsTransporter(): any {
     const host = process.env.SMTP_SERVER || process.env.SMTP_HOST;
@@ -106,19 +112,19 @@ function opsTransporter(): any {
     try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
     const t = nodemailer.createTransport({
         host, port, secure: port === 465, auth: user ? { user, pass } : undefined,
-        pool: true, maxConnections: 2, maxMessages: 100, connectionTimeout: 5_000, greetingTimeout: 5_000, socketTimeout: 10_000,
+        pool: true, maxConnections: 2, maxMessages: 100, connectionTimeout: 30_000, greetingTimeout: 30_000, socketTimeout: 45_000,
     });
     opsTransport = { key, t };
     return t;
 }
 
-/** Send through the ops transport (12 s cap). Throws when SMTP is unset or the send fails — callers decide whether that matters. */
+/** Send through the ops transport (60 s cap). Throws when SMTP is unset or the send fails — callers decide whether that matters. */
 export async function sendOpsMail(mail: OpsMail): Promise<void> {
     if (!smtpConfigured()) throw new Error('SMTP is not configured — set SMTP_SERVER, SMTP_USER and SMTP_PASSWORD in the host environment');
     try {
         await Promise.race([
             opsTransporter().sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, ...mail }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('smtp timeout (12 s)')), 12_000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('smtp timeout (60 s)')), 60_000)),
         ]);
     } catch (e) {
         try { opsTransport?.t?.close?.(); } catch { /* ignore */ }
