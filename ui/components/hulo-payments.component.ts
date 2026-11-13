@@ -807,7 +807,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     settingsList: any[] | null = null; cfg: any = null; cfgIdx = 0;
     linkOrder = ''; linkProvider = ''; linkMode: 'hosted' | 'provider' = 'hosted'; linkHours = 72; link: any = null; links: any = null; copied = false;
     connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
-    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
+    setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean; premium?: boolean } | null = null;
     digest: any = null; digestBusy = false;
     remindEmail = ''; reminding = false; remindSent = false;
 
