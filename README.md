@@ -209,14 +209,40 @@ GET  /hulo-payments/pay-links?orderCode=…
 Without `mode`, a request with a `methodCode` makes a provider link and one
 without makes a hosted link.
 
-**Service API (for other plugins).** `HuloPayLinkService` is the stable
-entry point; HULO Quotations uses it for "Pay now" on accepted quotes.
-Resolve it across plugin modules with Nest's `ModuleRef`:
+**Service API (for other plugins).** `PayLinkService` is the stable
+entry point (`HuloPayLinkService` is an alias of the same class); HULO
+Quotations uses it for "Pay now", deposits and balances on accepted quotes.
+Resolve it across plugin modules with Nest's `ModuleRef`. The simplest call:
 
 ```ts
-import { HuloPayLinkService, PayLinkError } from '@huloglobal/vendure-plugin-payments';
+import { PayLinkService, PayLinkError } from '@huloglobal/vendure-plugin-payments';
 
-const payLinks = this.moduleRef.get(HuloPayLinkService, { strict: false });
+const payLinks = this.moduleRef.get(PayLinkService, { strict: false });
+const { url, ref } = await payLinks.createPayLink(ctx, {
+  orderCode: order.code,
+  amount: 25000,               // optional, minor units: a deposit or balance instead of the whole order
+  currency: 'GBP',             // must be the order's currency
+  description: 'Deposit for quote Q-1042',
+  customerEmail: 'buyer@example.com', // optional, default the order's customer
+  returnUrl: 'https://shop.example.com/quote/thanks', // optional, https
+  expiresInHours: 168,         // optional, 1–720, default 72
+  reference: 'Q-1042',         // optional: ledger row + `reference` metadata on the payment
+  metadata: { quotation: 'Q-1042' }, // optional, at most 10 string keys
+});
+```
+
+Without `amount` the link is this shop's hosted page for what is left to
+pay (every enabled method). With `amount` below what is left, it is a
+**Stripe** link for that amount (free; needs an enabled Stripe method on
+the order's channel): paying it adds a **partial payment** to the order,
+which stays in `ArrangingPayment` until its settled payments cover the
+total, then moves to `PaymentSettled` — a deposit and then a balance are two
+links, two payments. `amount` may not exceed what is left to pay (the total
+less settled and authorised payments), so a balance can never over-pay.
+
+The fuller form, with the link details in the result:
+
+```ts
 const link = await payLinks.create(ctx, {
   orderCode: order.code,          // or orderId
   mode: 'hosted',                 // default; or 'provider' (+ methodCode)
@@ -224,13 +250,14 @@ const link = await payLinks.create(ctx, {
   returnUrl: 'https://shop.example.com/quote/thanks', // https only; default <publicBaseUrl>/checkout/confirmation/<code>
   locale: 'en-GB',                // hosted page language
   createdBy: 'quotation:Q-1042',  // kept on the ledger row
+  amount: 25000,                  // optional part payment (forces a Stripe link)
 });
 // → { url, ref, expiresAt, mode, provider, orderCode, amount, currency }
 const issued = await payLinks.listForOrder(order.code);
 // → [{ id, provider, mode, status: 'pending' | 'ok' | 'failed', amount, currency, ref, url, expiresAt, createdAt }]
 ```
 
-`create` throws `PayLinkError` with a `code`: `invalid-input`,
+`create` and `createPayLink` throw `PayLinkError` with a `code`: `invalid-input`,
 `order-not-found`, `order-not-payable` (paid, shipped, cancelled or zero
 total), `no-provider`, `licence-required` or `provider-error`. The order
 must be in a state that can move to `ArrangingPayment` when the customer

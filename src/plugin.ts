@@ -15,7 +15,7 @@ import { WebhookController, webhookRawBodyMiddleware } from './core/webhook.cont
 import { HuloPaymentsAdminController } from './core/admin.controller';
 import { CspReportController, HostedCheckoutController, cspReportBodyMiddleware } from './core/hosted.controller';
 import { HostedCheckoutService } from './core/hosted.service';
-import { HuloPayLinkService } from './core/pay-link.service';
+import { PayLinkService } from './core/pay-link.service';
 import { configureRateLimits, RateLimitOptions } from './core/rate-limit';
 import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
@@ -186,7 +186,7 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
     // ScheduleModule here so the renewal cron fires on hosts that never registered it themselves (Nest de-duplicates the dynamic module).
     imports: [PluginCommonModule, ScheduleModule.forRoot()],
     controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController, CspReportController],
-    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService, HuloPaymentsEngagementService, HuloPayLinkService],
+    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService, HuloPaymentsEngagementService, PayLinkService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },
     compatibility: '>=3.5.0 <4.0.0',
     configuration: (config: RuntimeVendureConfig) => {

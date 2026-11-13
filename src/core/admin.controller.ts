@@ -10,7 +10,7 @@ import { PaymentsService } from './payments.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 import { BUY_URL, getRuntime, PremiumRequiredError, requirePremium } from './runtime';
 import { HuloPaymentsEngagementService } from '../engagement.service';
-import { HuloPayLinkService, PayLinkError } from './pay-link.service';
+import { PayLinkService, PayLinkError } from './pay-link.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
@@ -56,7 +56,7 @@ export class HuloPaymentsAdminController {
         private subscriptions: SubscriptionService,
         private paymentMethodService: PaymentMethodService,
         private engagement: HuloPaymentsEngagementService,
-        private payLinks: HuloPayLinkService,
+        private payLinks: PayLinkService,
     ) {}
 
     /** Field metadata for the Connect form, derived from the handler args so labels stay in one place. */

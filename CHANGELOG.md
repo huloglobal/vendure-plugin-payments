@@ -33,9 +33,16 @@ captures, refunds made from Vendure and webhooks work exactly as in 0.3.8.
   order's channel, bank transfer and pay later included, for 1 hour to 30 days. Paying it records the
   payment exactly like a checkout and turns the link's ledger row to `ok`. `GET /hulo-payments/pay-links?orderCode=`
   lists an order's links.
-- **`HuloPayLinkService`** — a stable, exported service API for pay links (`create(ctx, input)`,
-  `listForOrder(orderCode)`, `PayLinkError` codes) so other plugins (HULO Quotations) can issue a "Pay now"
-  link. Documented in the README.
+- **`PayLinkService`** (alias `HuloPayLinkService`) — a stable, exported service API for pay links
+  (`createPayLink(ctx, { orderCode, amount?, currency, description, customerEmail?, returnUrl?,
+  expiresInHours?, reference?, metadata? }) → { url, ref }`, plus `create(ctx, input)`,
+  `listForOrder(orderCode)` and `PayLinkError` codes) so other plugins (HULO Quotations) can issue "Pay now",
+  deposit and balance links. Documented in the README.
+- **Part payments by link (free).** A pay link with an `amount` below what is left to pay is a Stripe link
+  for that amount; paying it adds a partial payment, and the order reaches PaymentSettled only once its
+  settled payments cover the total (deposit, then balance). Stripe accepts an intent below the order total
+  only when the plugin stamped it `huloPartial` server-side; every other payment still has to match the total
+  exactly. A link can never be for more than is left to pay.
 - **Dashboard-refund reconciliation (free, per channel, off by default).** With Settings → Routing → *Record
   refunds made in the provider's dashboard* on, a refund made in Stripe's (or another provider's) own
   dashboard becomes a Settled Vendure refund on the order's payment, keyed by the provider's refund id, with

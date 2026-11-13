@@ -8,7 +8,7 @@ import { adyenProvider } from '../providers/adyen';
 import { bankTransferProvider } from '../providers/offline';
 import { registerProvider } from './provider';
 import { configureRuntime } from './runtime';
-import { HuloPayLinkService, PayLinkError } from './pay-link.service';
+import { PayLinkService, PayLinkError } from './pay-link.service';
 import { PremiumWeeklyDigest } from './premium-digest';
 
 for (const p of [stripeProvider, adyenProvider, bankTransferProvider]) registerProvider(p);
@@ -147,7 +147,7 @@ describe('pay-link service API', () => {
         const hosted = { create: vi.fn(async () => ({ id: 42, token: 'b'.repeat(48), expiresAt: new Date(Date.now() + 72 * 3600_000).toISOString() })) };
         const orderService = { findOneByCode: vi.fn(async () => o), findOne: vi.fn(async () => o) };
         const connection = { rawConnection: { options: { type: 'mysql' }, query: vi.fn(async () => methods.map(m => ({ id: 1, code: m.code, enabled: 1, handler: JSON.stringify({ code: m.handler, args: m.args || [] }) }))) } };
-        const svc = new HuloPayLinkService(connection as any, orderService as any, ledger as any, hosted as any);
+        const svc = new PayLinkService(connection as any, orderService as any, ledger as any, hosted as any);
         return { svc, ledger, hosted };
     };
     const ctx = { channelId: 1, activeUserId: 3 } as any;

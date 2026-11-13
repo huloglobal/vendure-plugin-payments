@@ -116,7 +116,12 @@ export const stripeProvider: PaymentProvider = {
         }
         if (String(pi.currency).toUpperCase() !== order.currencyCode) return { state: 'Error', amount: 0, errorMessage: 'Currency mismatch' };
         const expected = toProviderMinor(order.totalWithTax, order.currencyCode);
-        if (Number(pi.amount) !== expected) return { state: 'Error', amount: 0, errorMessage: `Amount mismatch (intent ${pi.amount}, order ${expected})` };
+        // A partial pay link (deposit / balance) was created server-side for part of the order: its intent is
+        // stamped huloPartial and may be for less than the total. Vendure then records a partial payment, and the
+        // order reaches PaymentSettled only once its settled payments cover the total.
+        const partial = String(pi.metadata?.huloPartial || '') === '1';
+        if (partial ? !(Number(pi.amount) > 0 && Number(pi.amount) <= expected) : Number(pi.amount) !== expected) return { state: 'Error', amount: 0, errorMessage: `Amount mismatch (intent ${pi.amount}, order ${expected})` };
+        const intentAmount = fromProviderMinor(Number(pi.amount), order.currencyCode);
         const meta = {
             paymentIntentId: pi.id, customer: pi.customer || null, paymentMethod: pi.payment_method || null,
             paymentMethodType: pi.latest_charge?.payment_method_details?.type || null,
@@ -128,9 +133,9 @@ export const stripeProvider: PaymentProvider = {
             case 'succeeded':
                 return { state: 'Settled', amount: fromProviderMinor(Number(pi.amount_received || pi.amount), order.currencyCode), transactionId: pi.id, metadata: meta };
             case 'requires_capture':
-                return { state: 'Authorized', amount: order.totalWithTax, transactionId: pi.id, metadata: { ...meta, capture: 'manual' } };
+                return { state: 'Authorized', amount: partial ? intentAmount : order.totalWithTax, transactionId: pi.id, metadata: { ...meta, capture: 'manual' } };
             case 'processing':
-                return { state: 'Authorized', amount: order.totalWithTax, transactionId: pi.id, metadata: { ...meta, processing: true } };
+                return { state: 'Authorized', amount: partial ? intentAmount : order.totalWithTax, transactionId: pi.id, metadata: { ...meta, processing: true } };
             default:
                 return { state: 'Declined', amount: 0, transactionId: pi.id, errorMessage: pi.last_payment_error?.message || `PaymentIntent is ${pi.status}`, metadata: meta };
         }
@@ -281,6 +286,11 @@ export const stripeProvider: PaymentProvider = {
         // One line for the order total: the PaymentIntent must equal order.totalWithTax
         // (shipping, surcharges, tax rounding) or the webhook's amount check refuses it.
         const lines = [{ name: input.description || `Order ${input.orderCode}`, quantity: 1, amount: input.amount }];
+        // Caller metadata (e.g. a quotation reference): at most 10 keys, short strings; never our own keys.
+        const extra: Record<string, string> = {};
+        for (const [k, v] of Object.entries(input.metadata || {}).slice(0, 10)) {
+            if (/^[A-Za-z0-9_]{1,40}$/.test(k) && !['orderCode', 'huloPayLink', 'huloPartial', 'vendureOrderId', 'huloRenewal'].includes(k)) extra[k] = String(v ?? '').slice(0, 450);
+        }
         const session = await stripe(args, '/checkout/sessions', {
             form: {
                 mode: 'payment',
@@ -288,8 +298,8 @@ export const stripeProvider: PaymentProvider = {
                 success_url: input.returnUrl ? `${input.returnUrl}${input.returnUrl.includes('?') ? '&' : '?'}paid=1` : 'https://example.com/paid',
                 cancel_url: input.returnUrl || 'https://example.com/cancelled',
                 customer_email: input.customerEmail || undefined,
-                metadata: { orderCode: input.orderCode, huloPayLink: '1' },
-                payment_intent_data: { metadata: { orderCode: input.orderCode, huloPayLink: '1' }, description: input.description },
+                metadata: { ...extra, orderCode: input.orderCode, huloPayLink: '1', ...(input.partial ? { huloPartial: '1' } : {}) },
+                payment_intent_data: { metadata: { ...extra, orderCode: input.orderCode, huloPayLink: '1', ...(input.partial ? { huloPartial: '1' } : {}) }, description: input.description },
                 expires_at: input.expiresAt ? Math.floor(new Date(input.expiresAt).getTime() / 1000) : undefined,
             },
             idempotencyKey: idem('hulo-link', input.orderCode, input.amount, Date.now().toString(36).slice(0, 5)),

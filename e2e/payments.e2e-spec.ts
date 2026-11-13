@@ -7,6 +7,8 @@ import { HuloPaymentsPlugin } from '../src/plugin';
 import { LedgerService } from '../src/core/ledger.service';
 import { SubscriptionService } from '../src/subscriptions/subscription.service';
 import { configureRuntime, getRuntime } from '../src/core/runtime';
+import { PayLinkService } from '../src/core/pay-link.service';
+import { PaymentsService } from '../src/core/payments.service';
 
 /**
  * Boots a real Vendure server with the plugin on MariaDB and exercises the
@@ -432,5 +434,75 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         expect(Number(last.headers.get('retry-after'))).toBeGreaterThan(0);
         // Another client is unaffected.
         expect((await fetch(url, { headers: { 'x-forwarded-for': '198.51.100.78' } })).status).toBe(404);
+    });
+
+    it('PayLinkService.createPayLink: a deposit and a balance are two partial payments; PaymentSettled only once covered', async () => {
+        configureRuntime({ hasPremiumAccess: () => false }); // free tier
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'deposit@example.test');
+        const cur = order.currencyCode.toLowerCase();
+        const deposit = 500;
+        const balance = order.totalWithTax - deposit;
+        const svc = (server as any).app.get(PayLinkService) as PayLinkService;
+        const ctx = await ((server as any).app.get(PaymentsService) as PaymentsService).adminCtx(1);
+        const realFetch = globalThis.fetch;
+        const sessions: any[] = [];
+        const intents: Record<string, any> = {};
+        (globalThis as any).fetch = async (url: any, init: any) => {
+            const u = String(url);
+            if (u === 'https://api.stripe.com/v1/checkout/sessions') {
+                const body = new URLSearchParams(String(init.body));
+                sessions.push(body);
+                return new Response(JSON.stringify({ id: `cs_${sessions.length}`, url: `https://checkout.stripe.test/${sessions.length}` }), { status: 200 });
+            }
+            const m = u.match(/^https:\/\/api\.stripe\.com\/v1\/payment_intents\/(pi_[a-z0-9]+)/);
+            if (m) return new Response(JSON.stringify(intents[m[1]]), { status: 200 });
+            return realFetch(url, init);
+        };
+        const pay = async (n: number, amount: number) => {
+            const pi = `pi_part${n}`;
+            intents[pi] = { id: pi, status: 'succeeded', amount, amount_received: amount, currency: cur, metadata: { orderCode: order.code, huloPayLink: '1', huloPartial: '1' } };
+            const ev = { id: `evt_part_${n}`, type: 'checkout.session.completed', data: { object: { id: `cs_${n}`, payment_intent: pi, amount_total: amount, currency: cur, metadata: { orderCode: order.code, huloPayLink: '1', huloPartial: '1' } } } };
+            const body = JSON.stringify(ev);
+            const t = Math.floor(Date.now() / 1000);
+            const sig = `t=${t},v1=${createHmac('sha256', 'whsec_e2e').update(`${t}.${body}`).digest('hex')}`;
+            const res = await fetch(`${BASE}/hulo-payments/webhook/hulo-stripe`, { method: 'POST', headers: { 'content-type': 'application/json', 'stripe-signature': sig }, body });
+            expect(res.status).toBe(200);
+        };
+        const state = async () => (await adminClient.query(gql`query($c: String!) { orders(options: { filter: { code: { eq: $c } } }) { items { state payments { state amount } } } }`, { c: order.code }) as any).orders.items[0];
+        try {
+            // Over the remaining amount, or another currency: refused.
+            await expect(svc.createPayLink(ctx, { orderCode: order.code, amount: order.totalWithTax + 1, currency: order.currencyCode, description: 'Too much' })).rejects.toMatchObject({ code: 'invalid-input' });
+            await expect(svc.createPayLink(ctx, { orderCode: order.code, amount: deposit, currency: 'XXX', description: 'Bad' })).rejects.toMatchObject({ code: 'invalid-input' });
+            const dep = await svc.createPayLink(ctx, { orderCode: order.code, amount: deposit, currency: order.currencyCode, description: 'Deposit for Q-1', reference: 'Q-1', metadata: { quotation: 'Q-1' } });
+            expect(dep).toMatchObject({ url: 'https://checkout.stripe.test/1', ref: 'cs_1' });
+            expect(sessions[0].get('line_items[0][price_data][unit_amount]')).toBe(String(deposit));
+            expect(sessions[0].get('payment_intent_data[metadata][huloPartial]')).toBe('1');
+            expect(sessions[0].get('payment_intent_data[metadata][quotation]')).toBe('Q-1');
+            await pay(1, deposit);
+            let o = await state();
+            expect(o.state).toBe('ArrangingPayment');
+            expect(o.payments.filter((p: any) => p.state === 'Settled').map((p: any) => p.amount)).toEqual([deposit]);
+            // The balance: no amount left to over-pay.
+            await expect(svc.createPayLink(ctx, { orderCode: order.code, amount: balance + 1, currency: order.currencyCode, description: 'Balance' })).rejects.toMatchObject({ code: 'invalid-input' });
+            const bal = await svc.createPayLink(ctx, { orderCode: order.code, amount: balance, currency: order.currencyCode, description: 'Balance for Q-1', reference: 'Q-1' });
+            expect(bal.ref).toBe('cs_2');
+            await pay(2, balance);
+            o = await state();
+            expect(o.state).toBe('PaymentSettled');
+            expect(o.payments.filter((p: any) => p.state === 'Settled').map((p: any) => p.amount).sort((a: number, b: number) => a - b)).toEqual([deposit, balance].sort((a, b) => a - b));
+            await expect(svc.createPayLink(ctx, { orderCode: order.code, currency: order.currencyCode, description: 'Again' })).rejects.toMatchObject({ code: 'order-not-payable' });
+        } finally { (globalThis as any).fetch = realFetch; }
+    });
+
+    it('PayLinkService.createPayLink without an amount is a hosted-page link for the whole order', async () => {
+        configureRuntime({ hasPremiumAccess: () => false });
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'whole@example.test');
+        const svc = (server as any).app.get(PayLinkService) as PayLinkService;
+        const ctx = await ((server as any).app.get(PaymentsService) as PaymentsService).adminCtx(1);
+        const r = await svc.createPayLink(ctx, { orderCode: order.code, currency: order.currencyCode, description: 'Quote Q-2', reference: 'Q-2' });
+        expect(r.url).toMatch(new RegExp(`^${BASE}/hulo-payments/pay/[a-f0-9]{48}$`));
+        expect(r.ref).toMatch(/^hosted:\d+$/);
     });
 });

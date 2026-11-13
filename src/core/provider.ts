@@ -182,6 +182,10 @@ export interface PayLinkInput {
     returnUrl?: string;
     expiresAt?: string;
     lines?: Array<{ name: string; quantity: number; amount: number }>;
+    /** The link is for part of the order (a deposit or a balance): the payment it produces is a partial one. */
+    partial?: boolean;
+    /** Extra string metadata stamped on the provider payment (the plugin's own keys win). */
+    metadata?: Record<string, string>;
 }
 
 export interface PayLinkOutcome { url: string; ref: string; expiresAt?: string }
