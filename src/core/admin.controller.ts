@@ -3,7 +3,7 @@ import { Ctx, LanguageCode, OrderService, PaymentMethodService, Permission, Requ
 import type { Response } from 'express';
 import { allProviders, getProvider, ProviderArgs } from './provider';
 import { HANDLER_SHORT_NAMES, HANDLER_ARGS } from './handlers';
-import { adapterFor } from '@huloglobal/vendure-licence-sdk';
+import { adapterFor, isAdminApiSession } from '@huloglobal/vendure-licence-sdk';
 import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from './credentials';
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
@@ -13,7 +13,7 @@ import { HuloPaymentsEngagementService } from '../engagement.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
-    if (!ctx.userHasPermissions(needed)) { res.status(403).json({ error: 'forbidden' }); return true; }
+    if (!isAdminApiSession(ctx) || !ctx.userHasPermissions(needed)) { res.status(403).json({ error: 'forbidden' }); return true; }
     return false;
 }
 

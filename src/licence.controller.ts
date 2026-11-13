@@ -1,14 +1,14 @@
 import { Body, Controller, Get, Post, Query, Res } from '@nestjs/common';
 import { Ctx, Permission, RequestContext } from '@vendure/core';
 import { Response } from 'express';
-import { describeLicence, evalInstanceId, performSelfUpdate, selfUpdateEnv } from '@huloglobal/vendure-licence-sdk';
+import { describeLicence, evalInstanceId, performSelfUpdate, selfUpdateEnv, isAdminApiSession } from '@huloglobal/vendure-licence-sdk';
 import { HuloPaymentsPlugin, getOptions } from './plugin';
 import { HuloPaymentsLicenceService } from './licence.service';
 import { HuloPaymentsEngagementService, PREMIUM_FEATURES } from './engagement.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
     const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
-    if (!ctx.userHasPermissions(needed)) {
+    if (!isAdminApiSession(ctx) || !ctx.userHasPermissions(needed)) {
         res.status(403).json({ error: 'forbidden' });
         return true;
     }

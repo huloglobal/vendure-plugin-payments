@@ -5,6 +5,29 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] — 2026-11-13
+
+### Fixed
+- **Hosted payment page charges the recalculated total on Vendure 3.8+.** Vendure 3.8 recalculates prices,
+  promotions and shipping when an order moves to `ArrangingPayment`. The hosted page moved the order there and
+  then created the provider session (Stripe PaymentIntent etc.) from the order it had loaded before the
+  transition, so a price or promotion change since the cart was built could open a session for the old total.
+  The order is now reloaded after the transition. No change on Vendure 3.5 to 3.7.
+
+### Security
+- **Admin REST routes refuse a Shop-API session on Vendure 3.8+.** Vendure 3.8 binds every session to the
+  API it was created on and refuses Shop-API sessions on the Admin API (GHSA-5fpx-9m35-w745), but it does not
+  check REST routes added by plugins: an administrator's storefront session still carried their admin
+  permissions into the HULO Payments admin REST routes (providers, payment methods, ledger, licence). Those routes now also require a session created on the Admin API
+  (`isAdminApiSession` from the licence SDK 0.15.6, the same rule as Vendure's own AuthGuard). The admin UI
+  is unaffected; administrators logged in before the 3.8 upgrade log in again once, as Vendure already
+  requires. No change on Vendure 3.5 to 3.7.
+
+### Compatibility
+- **Tested with Vendure 3.8.2** (NestJS 12, `@nestjs/graphql` 14, Apollo Server 5), as well as 3.5 to 3.7.
+  The peer range stays `@vendure/core >=3.5.0 <4.0.0`; nothing here needs 3.8.
+- Requires `@huloglobal/vendure-licence-sdk` ^0.15.6.
+
 ## [0.3.7] — 2026-11-05
 
 ### Fixed

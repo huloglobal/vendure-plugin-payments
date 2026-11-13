@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Post, Req, Res } from '@nestjs/common';
-import { ChannelService, Logger, Order, OrderService, RequestContext, RequestContextService, TransactionalConnection } from '@vendure/core';
+import { ChannelService, EntityRelationPaths, Logger, Order, OrderService, RequestContext, RequestContextService, TransactionalConnection } from '@vendure/core';
 import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
 import { json as bodyJson } from 'express';
@@ -72,6 +72,9 @@ export const cspReportBodyMiddleware = { route: CSP_REPORT_PATH, handler: bodyJs
 const CSP_LOG_PER_MINUTE = 20;
 
 /** CSP violation reports from the hosted page, logged (rate-limited, hosted-page tokens masked) and acknowledged with 204. */
+/** Relations the hosted page and session need on the order. */
+const ORDER_RELATIONS: Array<EntityRelationPaths<Order>> = ['lines', 'lines.productVariant', 'customer', 'customer.groups', 'surcharges', 'payments', 'channels'];
+
 @Controller('hulo-payments')
 export class CspReportController {
     private window = { start: 0, n: 0 };
@@ -114,7 +117,7 @@ export class HostedCheckoutController {
         const s = await this.hosted.find(token);
         if (!s) return null;
         const ctx = await this.shopCtx(s.channelId);
-        const order = await this.orderService.findOne(ctx, s.orderId, ['lines', 'lines.productVariant', 'customer', 'customer.groups', 'surcharges', 'payments', 'channels']);
+        const order = await this.orderService.findOne(ctx, s.orderId, ORDER_RELATIONS);
         return order ? { s, ctx, order } : null;
     }
 
@@ -154,7 +157,8 @@ export class HostedCheckoutController {
     async session(@Param('token') token: string, @Body() body: any, @Res() res: Response) {
         const loaded = await this.load(token);
         if (!loaded || !this.hosted.isLive(loaded.s)) return res.status(410).json({ error: 'expired', message: 'This payment link has expired.' });
-        const { s, ctx, order } = loaded;
+        const { s, ctx } = loaded;
+        let order = loaded.order;
         const methodCode = String(body?.methodCode || '');
         if (!METHOD_CODE_RE.test(methodCode)) return res.status(400).json({ error: 'session', message: 'Choose a payment method first.' });
         if (PAID_STATES.includes(order.state)) return res.status(409).json({ error: 'paid', message: 'This order is already paid.', redirect: this.returnUrl(s.returnUrl, order.code, 'paid') });
@@ -165,6 +169,8 @@ export class HostedCheckoutController {
                 Logger.warn(`hosted session: ${order.code} cannot enter ArrangingPayment: ${t.message || t.errorCode}`, loggerCtx);
                 return res.status(409).json({ error: 'state', message: 'This order cannot take a payment right now. Please go back to the shop and try again.' });
             }
+            // Vendure 3.8+ recalculates prices and promotions on this transition: charge the fresh total, not the one loaded above.
+            order = (await this.orderService.findOne(ctx, order.id, ORDER_RELATIONS)) || order;
             order.state = 'ArrangingPayment';
         }
         // One link, a bounded number of provider sessions: each call creates a PaymentIntent / session at the provider.
