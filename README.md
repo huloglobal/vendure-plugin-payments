@@ -27,7 +27,14 @@ provider gets the same features and every payment lands in the same ledger:
 - **Signed, idempotent webhooks** — Stripe signatures, Adyen HMAC (+ basic
   auth), PayPal signature verification, Mollie fetch-back. Duplicate
   deliveries are ignored; results update Vendure payments and refunds.
-- **Disputes** — chargebacks land in the ledger and alert ops.
+- **Disputes** — chargebacks reported by Stripe, Adyen, PayPal, Mollie,
+  Square, Checkout.com and GoCardless land in the ledger and alert ops
+  (Braintree, Coinbase Commerce, bank transfer and pay later report none).
+- **Dashboard-refund reconciliation** — a refund made in the provider's own
+  dashboard becomes a settled Vendure refund on the order's payment, once,
+  with an order-history note; never more than is left to refund, and never
+  counted twice with a refund made from the order page. Per channel, off
+  until you turn it on (Settings → Routing).
 - **Saved cards** — Stripe Customers and Adyen stored payment methods for
   signed-in customers; list and remove from the shop API.
 - **Subscriptions** — mark any product variant as billed daily / weekly /
@@ -36,13 +43,16 @@ provider gets the same features and every payment lands in the same ledger:
   charged by the plugin's scheduler from the stored card. Customers see and
   cancel their subscriptions through the shop API; admins pause, resume,
   cancel and see MRR.
-- **Pay by link** — one click in the admin creates a provider-hosted payment
-  link for any unpaid order (draft orders, accepted quotes, phone orders);
-  the webhook settles it.
-- **Routing, rules and surcharges** — provider order per channel with
-  fallback on decline, an eligibility checker (amount band, currencies,
-  countries, customer groups, signed-in only) usable on any payment method,
-  and optional per-provider surcharges.
+- **Pay links** — one click in the admin (or one service call from another
+  plugin) creates a link for any unpaid order (draft orders, accepted quotes,
+  phone orders): this shop's own hosted payment page, or a provider-hosted
+  link. See [Pay links](#pay-links).
+- **Routing, rules and surcharges** — provider order per channel, fallback
+  to the next provider after a decline, an eligibility checker (amount band,
+  currencies, countries, customer groups, signed-in only) usable on any
+  payment method, and optional per-provider surcharges.
+- **Rate limits** — per-IP limits on the public routes (hosted page,
+  webhooks, CSP reports); see `rateLimits`.
 - **Ledger + dashboard** — authorisations, captures, refunds, disputes,
   failures, renewals and pay-links by provider and day, success rate,
   webhook deliveries, subscriptions, settings — under **Sales → Payments**.
@@ -52,7 +62,7 @@ a few REST calls on the platform `fetch`.
 
 ## In the admin
 
-- **Payments** (Sales → Payments): a set-up checklist, dashboard, a **Payment methods** tab (every provider × every channel, Add / Connect per cell), transactions, subscriptions, pay-by-link, the Providers tab with one-step Connect, and Settings (routing, surcharges, hosted page, operations, weekly report).
+- **Payments** (Sales → Payments): a set-up checklist (licensed), dashboard, a **Payment methods** tab (every provider × every channel, Add / Connect per cell), transactions, subscriptions, pay links, the Providers tab with one-step Connect, and Settings (routing, fallback, refund reconciliation, surcharges, hosted page, operations, weekly report).
 - **Dashboard → Add widget → Payments**: last 7 days' takings, settled payments and disputes on the Admin home page.
 - **Settings → Payment methods**: a **Connect a payment provider** button; every HULO method in the list shows a brand mark, one status word (Live / Test mode / Ready, disabled / Not set up) and the first line of its description; and under each method a panel that explains the provider, lists what customers can pay with, tests the keys you typed, shows the webhook URL to paste and whether its secret is saved, and walks through going live.
 
@@ -73,6 +83,7 @@ plugins: [
     ops: { email: 'ops@example.com', webhookUrl: process.env.OPS_SLACK_WEBHOOK },
     hostedReturnHosts: ['shop.example.com'],          // optional: hosts the hosted checkout may return to
     hostedCsp: 'report-only',                         // optional: Content-Security-Policy on the hosted page ('enforce' | 'report-only' | 'off')
+    rateLimits: { hostedPage: 120, hostedAction: 40, webhook: 1200, cspReport: 60 }, // optional, per minute per IP; false = off
   }),
   AdminUiPlugin.init({
     app: compileUiExtensions({ extensions: [HuloPaymentsPlugin.uiExtensions /* … */] }),
@@ -126,6 +137,26 @@ offer, switch to `'enforce'`. The Stripe flow is verified under `'enforce'`
 on every release; a provider that loads a host not on the list would show
 up in report-only mode first.
 
+**Rate limits.** The public routes are limited per client IP and per
+minute: the hosted page `GET` (120), its `/session` and `/complete` calls
+(40), provider webhooks under `/hulo-payments/webhook/<provider>` (1200)
+and CSP reports (60). Over the limit the answer is `429` with
+`Retry-After` (providers retry webhooks later). The client IP is the TCP
+peer; when the peer is a private address (a reverse proxy on the same host
+or LAN) it is what the proxy reports: `CF-Connecting-IP`, else the
+right-most public `X-Forwarded-For` entry, else `X-Real-IP`. Change the
+numbers with `rateLimits`, or pass `rateLimits: false` when a proxy in
+front already limits.
+
+**Fallback after a decline (licensed).** With Settings → Routing → *Fall
+back to the next provider on decline* on, a failed payment on the hosted
+page answers with the other methods, next in the routing order first; the
+page moves the failed method to the end and highlights the next one. For
+your own checkout, call `huloPaymentProviders(failedMethodCode: "stripe")`
+after a decline: the failed method comes last and the next one is
+`preferred`. Nothing is charged automatically; the customer still chooses.
+Unlicensed, or with the switch off, the list stays in routing order.
+
 For an embedded checkout, drive the providers yourself:
 
 ```graphql
@@ -157,6 +188,56 @@ Also available: `huloSavedPaymentMethods`, `huloRemoveSavedPaymentMethod`,
 `huloMySubscriptions`, `huloCancelSubscription(id, atPeriodEnd)`,
 `huloApplyPaymentSurcharge(methodCode)`.
 
+## Pay links
+
+Free. **Sales → Payments → Pay by link**: enter an order code and choose
+*This shop's payment page* (the hosted page for that order, offering every
+method enabled on its channel, bank transfer and pay later included) or *A
+provider's payment page* (Stripe Checkout, Adyen, PayPal, Mollie, Square,
+Checkout.com or Coinbase Commerce; providers other than Stripe need a
+licence). Links last 1 hour to 30 days (default 3 days). A hosted link is
+paid exactly like a checkout; a provider link is settled by the provider's
+webhook. Each link is a `paylink` row in the ledger, `pending` until paid.
+
+Admin REST (needs `UpdateOrder`; `ReadOrder` to list):
+
+```http
+POST /hulo-payments/pay-link   { "orderCode": "…", "mode": "hosted" | "provider", "methodCode": "stripe", "expiresInHours": 72, "returnUrl": "https://…" }
+GET  /hulo-payments/pay-links?orderCode=…
+```
+
+Without `mode`, a request with a `methodCode` makes a provider link and one
+without makes a hosted link.
+
+**Service API (for other plugins).** `HuloPayLinkService` is the stable
+entry point; HULO Quotations uses it for "Pay now" on accepted quotes.
+Resolve it across plugin modules with Nest's `ModuleRef`:
+
+```ts
+import { HuloPayLinkService, PayLinkError } from '@huloglobal/vendure-plugin-payments';
+
+const payLinks = this.moduleRef.get(HuloPayLinkService, { strict: false });
+const link = await payLinks.create(ctx, {
+  orderCode: order.code,          // or orderId
+  mode: 'hosted',                 // default; or 'provider' (+ methodCode)
+  expiresInHours: 168,            // 1–720, default 72
+  returnUrl: 'https://shop.example.com/quote/thanks', // https only; default <publicBaseUrl>/checkout/confirmation/<code>
+  locale: 'en-GB',                // hosted page language
+  createdBy: 'quotation:Q-1042',  // kept on the ledger row
+});
+// → { url, ref, expiresAt, mode, provider, orderCode, amount, currency }
+const issued = await payLinks.listForOrder(order.code);
+// → [{ id, provider, mode, status: 'pending' | 'ok' | 'failed', amount, currency, ref, url, expiresAt, createdAt }]
+```
+
+`create` throws `PayLinkError` with a `code`: `invalid-input`,
+`order-not-found`, `order-not-payable` (paid, shipped, cancelled or zero
+total), `no-provider`, `licence-required` or `provider-error`. The order
+must be in a state that can move to `ArrangingPayment` when the customer
+pays (`Draft`, `AddingItems` with a customer and shipping method, or
+`ArrangingPayment`). These two methods, their inputs and their results
+keep their shape across minor versions.
+
 ## Subscriptions
 
 Set **Subscription billing interval** (and optionally *every N intervals*
@@ -173,6 +254,11 @@ scheduler runs hourly on the worker; the plugin registers Nest's
 `disableScheduler: true` to run it elsewhere.
 
 ## Weekly report, setup checklist and dashboard widget
+
+The weekly report and the set-up checklist are licensed (or evaluation)
+features. On the free tier the checklist is not shown, nothing is mailed
+and *Send me a test* answers 402; the report's settings are kept and it
+resumes when a licence is activated.
 
 **Set-up checklist.** The top of the Payments page lists what is still to
 do, each item checked against the real state of the install: a provider
@@ -220,15 +306,23 @@ them.
 | Free tier | Licensed |
 | --- | --- |
 | Stripe: sessions, wallets, 3-D Secure, automatic/manual capture, refunds, disputes, signed webhooks; bank transfer; pay later | Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com, Coinbase Commerce |
-| Hosted checkout page | |
-| Ledger, dashboard, webhook log | Subscriptions and the renewal scheduler |
-| `hulo-payment-rules` eligibility checker | Saved cards, pay-by-link, provider routing, surcharges |
+| Hosted checkout page; pay links (hosted page, or Stripe links) | Provider pay links for the licensed providers |
+| Provider routing order; dashboard-refund reconciliation; per-IP rate limits | Fallback to the next provider after a decline |
+| Ledger, dashboard, webhook log, dashboard widget | Subscriptions and the renewal scheduler |
+| `hulo-payment-rules` eligibility checker | Saved cards, surcharges |
+| | Weekly report and set-up checklist |
 
-Unlicensed installs run everything for 14 days; the trial (card required,
-nothing charged until day 15) and the licence are bought from the admin
-banner. Details and pricing: https://huloglobal.com/vendure-plugins/payments/
+Unlicensed installs run everything for 14 days (no card needed); after
+that the licence is bought from the admin banner. Details and pricing:
+https://huloglobal.com/vendure-plugins/payments/
 
 ## Webhook events handled
+
+Each provider posts to its own endpoint on the Vendure server:
+`<publicBaseUrl>/hulo-payments/webhook/<handler code>`, e.g.
+`https://shop.example.com/hulo-payments/webhook/hulo-stripe` (the
+Providers tab shows the exact URL; Connect registers it where the
+provider's API allows).
 
 Stripe `payment_intent.succeeded / amount_capturable_updated / payment_failed / canceled`, `charge.refunded`, `charge.refund.updated`, `refund.updated`, `charge.dispute.created / closed`, `checkout.session.completed`, `invoice.paid / payment_failed`, `customer.subscription.updated / deleted / paused`.
 Adyen `AUTHORISATION`, `CAPTURE`, `CAPTURE_FAILED`, `CANCELLATION`, `REFUND`, `REFUND_FAILED`, `CHARGEBACK`, `NOTIFICATION_OF_CHARGEBACK`, `CHARGEBACK_REVERSED`, `RECURRING_CONTRACT`.

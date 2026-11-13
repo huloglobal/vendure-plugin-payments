@@ -5,6 +5,69 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-11-13
+
+Parity with HULO Payments for WordPress. Existing payment behaviour is unchanged by default: Stripe sessions,
+captures, refunds made from Vendure and webhooks work exactly as in 0.3.8.
+
+### Changed (tiers)
+- **Pay links are free.** The admin's Pay by link tab and `POST /hulo-payments/pay-link` no longer need a
+  licence. Provider links for the licensed providers (Adyen, PayPal, Mollie, Square, Checkout.com, Coinbase
+  Commerce) still do, as those providers do everywhere; Stripe links and hosted-page links are free.
+- **The weekly report and the set-up checklist are licensed** (licence or evaluation). On the free tier the
+  scheduler sends nothing, *Send me a test* answers 402 and `GET /hulo-payments/setup` returns no items
+  (`premium: false`). The report's settings and history are kept; it resumes when a licence is activated.
+- `PREMIUM_FEATURES` (admin banners, weekly report) now lists what a licence really adds: the eight other
+  providers, subscriptions, saved cards, surcharges, fallback after a decline, and the weekly report and
+  checklist. The hosted checkout page and provider routing were listed as licensed but have always been free.
+
+### Added
+- **Fallback after a decline (licensed; fixes B9).** The per-channel *Fall back to the next provider on
+  decline* setting was saved and shown but never read. Now, with a licence and the switch on, a failed
+  payment or session on the hosted page answers with `fallback` (the other methods, next in the routing
+  order first) and the page moves the failed method to the end and highlights the next one. Storefronts with
+  their own checkout get the same order from `huloPaymentProviders(failedMethodCode: "…")` (new optional
+  argument). Nothing is charged automatically. Unlicensed, or with the switch off, nothing changes.
+- **Hosted-page pay links (free).** A pay link can now be this shop's own hosted payment page for the order
+  (`mode: 'hosted'`, the default when no `methodCode` is given), offering every method enabled on the
+  order's channel, bank transfer and pay later included, for 1 hour to 30 days. Paying it records the
+  payment exactly like a checkout and turns the link's ledger row to `ok`. `GET /hulo-payments/pay-links?orderCode=`
+  lists an order's links.
+- **`HuloPayLinkService`** — a stable, exported service API for pay links (`create(ctx, input)`,
+  `listForOrder(orderCode)`, `PayLinkError` codes) so other plugins (HULO Quotations) can issue a "Pay now"
+  link. Documented in the README.
+- **Dashboard-refund reconciliation (free, per channel, off by default).** With Settings → Routing → *Record
+  refunds made in the provider's dashboard* on, a refund made in Stripe's (or another provider's) own
+  dashboard becomes a Settled Vendure refund on the order's payment, keyed by the provider's refund id, with
+  an order-history note and one ledger row. A second event for the same refund (Stripe sends
+  `charge.refunded` and `refund.updated`) changes nothing; Stripe events that name no refund (API versions
+  from 2022-11-15) read the payment's refunds back; Mollie's running total is reconciled against the refunds
+  Vendure already has. Never more than is left to refund. Refunds made from the order page are recognised
+  (their ledger row, or a refund still in flight, in which case the event is answered 500 and redelivered)
+  and are never counted twice. Payments made by another integration on the same provider account are not
+  touched.
+- **Per-IP rate limits on the public routes**: hosted page `GET` 120/min, its `/session` and `/complete`
+  calls 40/min, provider webhooks 1200/min, CSP reports 60/min; `429` with `Retry-After` over the limit.
+  Configurable with the new `rateLimits` option (`false` turns them off). Behind a reverse proxy on a private
+  address the client IP is taken from `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP`.
+- Stripe: `listRefunds` on the provider contract (`GET /v1/refunds?payment_intent=`); `refundedTotal` on
+  normalised refund events (Stripe `charge.refunded`, Mollie).
+
+### Fixed
+- Saving settings through `POST /hulo-payments/settings` keeps the stored value of any field the request
+  leaves out (it used to reset it).
+
+### Docs
+- README: pay links and the service API, fallback, refund reconciliation, rate limits, tiers table (no card
+  is needed for the evaluation), the full webhook path (`<publicBaseUrl>/hulo-payments/webhook/hulo-stripe`)
+  and which providers report disputes (Stripe, Adyen, PayPal, Mollie, Square, Checkout.com, GoCardless).
+
+### Upgrade notes
+- New columns are added on boot: `hulo_payment_settings.reconcileRefunds` (default 0) and
+  `hulo_hosted_session.payLink` (default 0). No data changes.
+- `POST /hulo-payments/pay-link` without `mode` and without `methodCode` now makes a hosted-page link (it
+  used to pick the first provider that supports links). Pass `mode: 'provider'` for the old behaviour.
+
 ## [0.3.8] — 2026-11-13
 
 ### Fixed
