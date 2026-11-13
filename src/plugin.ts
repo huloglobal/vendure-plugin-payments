@@ -15,6 +15,8 @@ import { WebhookController, webhookRawBodyMiddleware } from './core/webhook.cont
 import { HuloPaymentsAdminController } from './core/admin.controller';
 import { CspReportController, HostedCheckoutController, cspReportBodyMiddleware } from './core/hosted.controller';
 import { HostedCheckoutService } from './core/hosted.service';
+import { HuloPayLinkService } from './core/pay-link.service';
+import { configureRateLimits, RateLimitOptions } from './core/rate-limit';
 import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
 import { makeHandler } from './core/handlers';
@@ -43,10 +45,20 @@ export interface HuloPaymentsPluginOptions {
      *  webhook URLs, pay-by-link return pages and licence domain matching. */
     publicBaseUrl: string;
     /** JWT licence key from huloglobal.com. Without it the plugin runs in the
-     *  FREE tier after the 14-day evaluation: Stripe, the ledger and the
-     *  dashboard stay on; the other eight providers, subscriptions, saved cards,
-     *  pay-by-link, routing and surcharges need a licence. */
+     *  FREE tier after the 14-day evaluation: Stripe, bank transfer, pay later,
+     *  the hosted checkout page, pay links, provider routing, refund
+     *  reconciliation, the ledger and the dashboard stay on; the other eight
+     *  providers, subscriptions, saved cards, surcharges, fallback after a
+     *  decline, the weekly report and the set-up checklist need a licence. */
     licenceKey?: string;
+    /**
+     * Requests per minute per client IP on the public routes: `hostedPage` (GET of the hosted
+     * page, default 120), `hostedAction` (its session/complete calls, 40), `webhook` (provider
+     * webhooks, 1200), `cspReport` (60). `false` turns them all off (e.g. when a proxy in front
+     * already limits). The client IP is the TCP peer, or — when the peer is a private address —
+     * what the proxy reports (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`).
+     */
+    rateLimits?: RateLimitOptions;
     /** Where disputes and failed renewals are reported. */
     ops?: {
         /** Signed JSON POST (Slack/Discord/Teams-compatible payload: { text }). */
@@ -163,8 +175,8 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
  * a single contract: hosted / embedded sessions with wallets and 3-D
  * Secure, automatic or manual capture, partial captures and refunds,
  * disputes, saved cards, subscriptions (native or scheduler-billed),
- * pay-by-link for any unpaid order, eligibility rules and surcharges,
- * provider routing with fallback, signed idempotent webhooks, and a ledger
+ * pay links for any unpaid order (hosted page or provider link), eligibility
+ * rules and surcharges, provider routing with fallback after a decline, signed idempotent webhooks, and a ledger
  * every provider writes to — with a dashboard on top.
  *
  * @docsCategory Plugin
@@ -174,7 +186,7 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
     // ScheduleModule here so the renewal cron fires on hosts that never registered it themselves (Nest de-duplicates the dynamic module).
     imports: [PluginCommonModule, ScheduleModule.forRoot()],
     controllers: [HuloPaymentsLicenceController, WebhookController, HuloPaymentsAdminController, HostedCheckoutController, CspReportController],
-    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService, HuloPaymentsEngagementService],
+    providers: [HuloPaymentsLicenceService, LedgerService, SubscriptionService, PaymentsService, SubscriptionCron, HostedCheckoutService, HuloPaymentsEngagementService, HuloPayLinkService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [HuloPaymentsShopResolver] },
     compatibility: '>=3.5.0 <4.0.0',
     configuration: (config: RuntimeVendureConfig) => {
@@ -267,6 +279,7 @@ export class HuloPaymentsPlugin {
 
     static init(options: HuloPaymentsPluginOptions): Type<HuloPaymentsPlugin> {
         cachedOptions = { ...options };
+        configureRateLimits(options.rateLimits);
         warnIfIncompatibleVendure({ pluginPackageName: PKG_NAME, pluginPackageVersion: PKG_VERSION, supportedRange: { min: '3.5.0', max: '4.0.0' } });
         if (!HuloPaymentsPlugin.revocation) { HuloPaymentsPlugin.revocation = new RevocationChecker(REVOCATION_URL); HuloPaymentsPlugin.revocation.start(); }
         if (!HuloPaymentsPlugin.updateChecker) { HuloPaymentsPlugin.updateChecker = new UpdateChecker(PKG_NAME, PKG_VERSION); HuloPaymentsPlugin.updateChecker.start(); }
@@ -277,7 +290,7 @@ export class HuloPaymentsPlugin {
         if (!status.valid) {
             HuloPaymentsPlugin.startEvaluation();
             // eslint-disable-next-line no-console
-            console.warn(`[${PKG_NAME}] ${status.message} — Running in FREE tier after the 14-day evaluation: Stripe, bank transfer, pay-later, the hosted checkout page, the ledger and the dashboard stay on; the other eight providers, subscriptions, saved cards, pay-by-link, routing and surcharges need a licence. Buy at https://elite.charity/licence/buy/${PLUGIN_ID}`);
+            console.warn(`[${PKG_NAME}] ${status.message} — Running in FREE tier after the 14-day evaluation: Stripe, bank transfer, pay-later, the hosted checkout page, pay links, routing, the ledger and the dashboard stay on; the other eight providers, subscriptions, saved cards, surcharges, fallback after a decline, the weekly report and the set-up checklist need a licence. Buy at https://elite.charity/licence/buy/${PLUGIN_ID}`);
         }
         if (!HuloPaymentsPlugin.heartbeat) {
             HuloPaymentsPlugin.heartbeat = new Heartbeat({ packageName: PKG_NAME, packageVersion: PKG_VERSION, licenceKey: options.licenceKey, publicKeyFingerprint: fingerprintPublicKey(HULO_PUBLIC_KEY), licenceKeyProvider: () => HuloPaymentsPlugin.currentLicenceKey() });

@@ -69,6 +69,7 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
 .summary .total{display:flex;justify-content:space-between;font-weight:800;font-size:18px;padding-top:12px}
 .foot{margin-top:14px;font-size:12px;color:var(--muted)}.foot a{color:var(--muted)}
 .hidden{display:none}
+.method.suggested{border-color:var(--accent)}.method.failed{opacity:.6}
 </style></head><body>
 <div class="wrap">
   <main class="card">
@@ -97,14 +98,24 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
   var current = null, session = null, stripe = null, elements = null, btInstance = null, sqCard = null, sqPayments = null;
   function status(kind, text){ var s = $('status'); s.className = 'status ' + kind; s.textContent = text; s.classList.remove('hidden'); }
   function reset(){ $('element').innerHTML = ''; $('instructions').classList.add('hidden'); $('pay').classList.add('hidden'); $('pay').disabled = false; $('status').classList.add('hidden'); }
-  function post(path, body){ return fetch(BASE + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(function(r){ return r.json().then(function(j){ if (!r.ok) throw new Error(j.message || j.error || 'Request failed'); return j; }); }); }
+  function post(path, body){ return fetch(BASE + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then(function(r){ return r.json().then(function(j){ if (!r.ok) { var err = new Error(j.message || j.error || 'Request failed'); err.body = j; throw err; } return j; }); }); }
+  /* Fallback after a decline (when the shop turned it on): the other methods first, the next one highlighted. */
+  function offerFallback(list, message){
+    if (!list || !list.length) return false;
+    var box = $('methods'), failed = null;
+    document.querySelectorAll('.method').forEach(function(b){ b.classList.remove('suggested'); if (b.dataset.method === current) failed = b; });
+    list.forEach(function(f, i){ document.querySelectorAll('.method').forEach(function(b){ if (b.dataset.method === f.methodCode) { box.appendChild(b); if (i === 0) b.classList.add('suggested'); } }); });
+    if (failed) { failed.classList.add('failed'); box.appendChild(failed); }
+    status('bad', (message || 'The payment was not completed.') + ' You can pay another way: ' + list.map(function(f){ return f.name; }).join(', ') + '.');
+    return true;
+  }
   function load(src){ return new Promise(function(res, rej){ if (document.querySelector('script[src="' + src + '"]')) return res(); var s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = function(){ rej(new Error('Could not load ' + src)); }; document.head.appendChild(s); }); }
   function finish(metadata){
     $('pay').disabled = true; status('info', 'Confirming your payment…');
     return post('/complete', { methodCode: current, metadata: metadata || {} }).then(function(r){
       if (r.paid) { status('ok', r.message || 'Payment received — taking you back to the shop…'); setTimeout(function(){ location.href = r.redirect; }, 900); }
-      else { status('bad', r.message || 'The payment was not completed.'); $('pay').disabled = false; }
-    }).catch(function(e){ status('bad', e.message); $('pay').disabled = false; });
+      else { if (!offerFallback(r.fallback, r.message)) status('bad', r.message || 'The payment was not completed.'); $('pay').disabled = false; }
+    }).catch(function(e){ if (!(e.body && offerFallback(e.body.fallback, e.message))) status('bad', e.message); $('pay').disabled = false; });
   }
   function select(btn){
     document.querySelectorAll('.method').forEach(function(b){ b.classList.remove('active'); }); btn.classList.add('active');
@@ -133,13 +144,14 @@ h2{font-size:15px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transf
       else { // redirect
         $('pay').textContent = 'Continue to ' + btn.querySelector('strong').textContent; $('pay').classList.remove('hidden'); $('pay').onclick = function(){ location.href = s.checkoutUrl; };
       }
-    }).catch(function(e){ status('bad', e.message); });
+    }).catch(function(e){ if (!(e.body && offerFallback(e.body.fallback, e.message))) status('bad', e.message); });
   }
   document.querySelectorAll('.method').forEach(function(b){ b.addEventListener('click', function(){ select(b); }); });
   var q = new URLSearchParams(location.search);
   if (RETURNED || q.get('returned') || q.get('payment_intent') || q.get('token') || q.get('cko') || q.get('billing_request') ) {
     status('info', 'Checking your payment…');
-    post('/complete', { returned: true, metadata: { paymentIntentId: q.get('payment_intent') || undefined, paypalOrderId: q.get('token') || undefined } }).then(function(r){ if (r.paid) { status('ok', r.message || 'Payment received — taking you back to the shop…'); setTimeout(function(){ location.href = r.redirect; }, 900); } else status('bad', r.message || 'The payment was not completed — choose a method to try again.'); }).catch(function(e){ status('bad', e.message); });
+    current = PRESELECT || null;
+    post('/complete', { returned: true, metadata: { paymentIntentId: q.get('payment_intent') || undefined, paypalOrderId: q.get('token') || undefined } }).then(function(r){ if (r.paid) { status('ok', r.message || 'Payment received — taking you back to the shop…'); setTimeout(function(){ location.href = r.redirect; }, 900); } else if (!offerFallback(r.fallback, r.message)) status('bad', r.message || 'The payment was not completed — choose a method to try again.'); }).catch(function(e){ status('bad', e.message); });
   } else if (document.querySelector('.method')) { var pre = null; PRESELECT && document.querySelectorAll('.method').forEach(function(b){ if (b.dataset.method === PRESELECT) pre = b; }); select(pre || document.querySelector('.method')); }
 })();
 </script></body></html>`;

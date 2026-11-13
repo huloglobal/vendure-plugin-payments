@@ -211,7 +211,7 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
     });
 
     it('stores per-channel settings and lists subscriptions', async () => {
-        await ledger().saveSettings({ channelId: 1, providerOrder: ['hulo-adyen', 'hulo-stripe'], fallbackOnFailure: false, saveCardsDefault: true, surcharges: { 'hulo-paypal': { type: 'percent', value: 2.5 } }, opsEmail: 'ops@example.test', dunningDays: 5, hostedBrandName: 'Staging shop', hostedAccent: '#1d4ed8', hostedLogoUrl: '' });
+        await ledger().saveSettings({ channelId: 1, providerOrder: ['hulo-adyen', 'hulo-stripe'], fallbackOnFailure: false, reconcileRefunds: false, saveCardsDefault: true, surcharges: { 'hulo-paypal': { type: 'percent', value: 2.5 } }, opsEmail: 'ops@example.test', dunningDays: 5, hostedBrandName: 'Staging shop', hostedAccent: '#1d4ed8', hostedLogoUrl: '' });
         const s = await ledger().getSettings(1);
         expect(s.providerOrder[0]).toBe('hulo-adyen');
         expect(s.surcharges['hulo-paypal']).toMatchObject({ type: 'percent', value: 2.5 });
@@ -302,5 +302,135 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         const after = await byCode();
         expect(after.state).toBe('PaymentSettled');
         expect(after.payments[0]).toMatchObject({ state: 'Settled', transactionId: 'PSP_FULL' });
+    });
+
+    // ── 0.4.0: parity wave ───────────────────────────────────────────────
+    const adminHeaders = () => { const t = (adminClient as any).getAuthToken?.() as string | undefined; return { 'content-type': 'application/json', ...(t ? { authorization: `Bearer ${t}` } : {}) }; };
+    const orderByCode = async (code: string) => (await adminClient.query(gql`query($c: String!) { orders(options: { filter: { code: { eq: $c } } }) { items { id state payments { id state transactionId amount refunds { id total state transactionId reason } } } } }`, { c: code }) as any).orders.items[0];
+    const stripeSig = (body: string) => { const t = Math.floor(Date.now() / 1000); return `t=${t},v1=${createHmac('sha256', 'whsec_e2e').update(`${t}.${body}`).digest('hex')}`; };
+    const stripeWebhook = (event: any) => { const body = JSON.stringify(event); return fetch(`${BASE}/hulo-payments/webhook/hulo-stripe`, { method: 'POST', headers: { 'content-type': 'application/json', 'stripe-signature': stripeSig(body) }, body }); };
+
+    it('pay links are free: a hosted-page link takes any unpaid order to paid and the ledger row to ok', async () => {
+        configureRuntime({ hasPremiumAccess: () => false });
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'paylink@example.test');
+        const r = await fetch(`${BASE}/hulo-payments/pay-link`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ orderCode: order.code, expiresInHours: 48 }) });
+        expect(r.ok).toBe(true);
+        const link: any = await r.json();
+        expect(link).toMatchObject({ ok: true, mode: 'hosted', provider: 'hulo-hosted', amount: order.totalWithTax, orderCode: order.code });
+        expect(link.url).toMatch(new RegExp(`^${BASE}/hulo-payments/pay/[a-f0-9]{48}$`));
+        expect(new Date(link.expiresAt).getTime() - Date.now()).toBeGreaterThan(47 * 3600_000);
+        expect((await fetch(link.url)).status).toBe(200);
+        const done: any = await (await fetch(`${link.url}/complete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'bank', metadata: {} }) })).json();
+        expect(done.paid).toBe(true);
+        const list: any = await (await fetch(`${BASE}/hulo-payments/pay-links?orderCode=${order.code}`, { headers: adminHeaders() })).json();
+        expect(list.items[0]).toMatchObject({ mode: 'hosted', status: 'ok', amount: order.totalWithTax });
+        // A provider link with a licensed provider still needs the licence.
+        const shop2 = shopClient();
+        const o2 = await orderToArrangingPayment(shop2, 'paylink2@example.test');
+        const lic = await fetch(`${BASE}/hulo-payments/pay-link`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ orderCode: o2.code, mode: 'provider', methodCode: 'adyen' }) });
+        expect(lic.status).toBe(402);
+        expect(((await lic.json()) as any).code).toBe('licence-required');
+        const missing = await fetch(`${BASE}/hulo-payments/pay-link`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ orderCode: 'NOPE0000' }) });
+        expect(missing.status).toBe(404);
+    });
+
+    it('weekly report and set-up checklist are licensed', async () => {
+        configureRuntime({ hasPremiumAccess: () => false });
+        const free: any = await (await fetch(`${BASE}/hulo-payments/setup`, { headers: adminHeaders() })).json();
+        expect(free).toMatchObject({ premium: false, items: [], complete: true });
+        const test = await fetch(`${BASE}/hulo-payments/digest/send-test`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ to: 'me@example.test' }) });
+        expect(test.status).toBe(402);
+        expect(((await (await fetch(`${BASE}/hulo-payments/digest/settings`, { headers: adminHeaders() })).json()) as any)).toMatchObject({ premium: false, nextDueAt: null });
+    });
+
+    it('B9: after a decline the hosted page and the shop API offer the next provider (licensed, channel switch on)', async () => {
+        const saved = await fetch(`${BASE}/hulo-payments/settings`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ channelId: 1, fallbackOnFailure: true }) });
+        expect(saved.ok).toBe(true);
+        const after: any = await saved.json();
+        expect(after.settings).toMatchObject({ fallbackOnFailure: true, opsEmail: 'ops@example.test', dunningDays: 5 }); // fields not sent are kept
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'fallback@example.test');
+        const h: any = await shop(`mutation { huloHostedCheckout(returnUrl: "https://shop.test/r") { url } }`);
+        const realFetch = globalThis.fetch;
+        (globalThis as any).fetch = async (url: any, init: any) => String(url).startsWith('https://api.stripe.com/v1/payment_intents/pi_declined')
+            ? new Response(JSON.stringify({ id: 'pi_declined', status: 'requires_payment_method', amount: order.totalWithTax, currency: order.currencyCode.toLowerCase(), metadata: { orderCode: order.code, vendureOrderId: '1' }, last_payment_error: { message: 'Your card was declined.' } }), { status: 200 })
+            : realFetch(url, init);
+        let dj: any;
+        try {
+            dj = await (await realFetch(`${h.huloHostedCheckout.url}/complete`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ methodCode: 'stripe', metadata: { paymentIntentId: 'pi_declined' } }) })).json();
+        } finally { (globalThis as any).fetch = realFetch; }
+        expect(dj.paid).toBe(false);
+        expect(dj.fallback.map((f: any) => f.methodCode)).not.toContain('stripe');
+        expect(dj.fallback.length).toBeGreaterThan(0);
+        const p: any = await shop(`{ huloPaymentProviders(failedMethodCode: "stripe") { methodCode preferred } }`);
+        expect(p.huloPaymentProviders[p.huloPaymentProviders.length - 1].methodCode).toBe('stripe');
+        expect(p.huloPaymentProviders[0].preferred).toBe(true);
+        // Unlicensed: the order stays the routing order and no fallback is offered.
+        configureRuntime({ hasPremiumAccess: () => false });
+        const p2: any = await shop(`{ huloPaymentProviders(failedMethodCode: "stripe") { methodCode } }`);
+        expect(p2.huloPaymentProviders[0].methodCode).toBe('stripe');
+    });
+
+    it('dashboard refunds become Vendure refunds once each (channel switch on), own refunds are not counted twice', async () => {
+        const shop = shopClient();
+        const order = await orderToArrangingPayment(shop, 'refund@example.test');
+        const cur = order.currencyCode.toLowerCase();
+        const pi = { id: 'pi_e2erefund', status: 'succeeded', amount: order.totalWithTax, amount_received: order.totalWithTax, currency: cur, metadata: { orderCode: order.code, vendureOrderId: '1' } };
+        const realFetch = globalThis.fetch;
+        let listed: any[] = [];
+        (globalThis as any).fetch = async (url: any, init: any) => {
+            const u = String(url);
+            if (u.startsWith('https://api.stripe.com/v1/payment_intents/pi_e2erefund')) return new Response(JSON.stringify(pi), { status: 200 });
+            if (u.startsWith('https://api.stripe.com/v1/refunds?payment_intent=')) return new Response(JSON.stringify({ data: listed }), { status: 200 });
+            if (u === 'https://api.stripe.com/v1/refunds') return new Response(JSON.stringify({ id: 're_own', status: 'succeeded', amount: 100, currency: cur }), { status: 200 });
+            return realFetch(url, init);
+        };
+        try {
+            const paid: any = await shop(ADD_PAYMENT, { m: 'stripe', md: { paymentIntentId: 'pi_e2erefund' } });
+            expect(paid.addPaymentToOrder.state).toBe('PaymentSettled');
+            const refundEvent = (id: string, refundId: string, amount: number) => ({ id, type: 'refund.updated', data: { object: { id: refundId, object: 'refund', status: 'succeeded', amount, currency: cur, payment_intent: 'pi_e2erefund' } } });
+            // Off (the default): the event leaves the payment alone, as before 0.4.0.
+            expect((await stripeWebhook(refundEvent('evt_rf_off', 're_dash0', 50))).status).toBe(200);
+            expect((await orderByCode(order.code)).payments[0].refunds).toHaveLength(0);
+            await fetch(`${BASE}/hulo-payments/settings`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ channelId: 1, reconcileRefunds: true }) });
+            // On: a dashboard refund is recorded once, under its Stripe id.
+            expect((await stripeWebhook(refundEvent('evt_rf_1', 're_dash1', 500))).status).toBe(200);
+            expect((await stripeWebhook(refundEvent('evt_rf_1b', 're_dash1', 500))).status).toBe(200);
+            const chargeRefunded = { id: 'evt_rf_2', type: 'charge.refunded', data: { object: { payment_intent: 'pi_e2erefund', currency: cur, amount_refunded: 500, metadata: pi.metadata, refunds: { data: [{ id: 're_dash1', status: 'succeeded', amount: 500, created: 1 }] } } } };
+            expect((await stripeWebhook(chargeRefunded)).status).toBe(200);
+            let p = (await orderByCode(order.code)).payments[0];
+            expect(p.refunds).toHaveLength(1);
+            expect(p.refunds[0]).toMatchObject({ total: 500, state: 'Settled', transactionId: 're_dash1' });
+            // An event that names no refund (newer Stripe API versions): the refunds are read back, only the new one is added.
+            listed = [{ id: 're_dash1', amount: 500, currency: cur, status: 'succeeded', created: 1 }, { id: 're_dash2', amount: 300, currency: cur, status: 'succeeded', created: 2 }];
+            const noRef = { id: 'evt_rf_3', type: 'charge.refunded', data: { object: { payment_intent: 'pi_e2erefund', currency: cur, amount_refunded: 800, metadata: pi.metadata } } };
+            expect((await stripeWebhook(noRef)).status).toBe(200);
+            p = (await orderByCode(order.code)).payments[0];
+            expect(p.refunds.map((r: any) => r.transactionId).sort()).toEqual(['re_dash1', 're_dash2']);
+            // A refund made from Vendure, then its webhook: still one refund.
+            const ord = await orderByCode(order.code);
+            const own: any = await adminClient.query(gql`mutation($p: ID!) { refundOrder(input: { paymentId: $p, amount: 100, reason: "requested_by_customer" }) { ... on Refund { id state transactionId } ... on ErrorResult { errorCode message } } }`, { p: ord.payments[0].id });
+            expect(own.refundOrder).toMatchObject({ state: 'Settled', transactionId: 're_own' });
+            expect((await stripeWebhook(refundEvent('evt_rf_4', 're_own', 100))).status).toBe(200);
+            p = (await orderByCode(order.code)).payments[0];
+            expect(p.refunds).toHaveLength(3);
+            const rows = (await ledger().list({ kind: 'refund', orderCode: order.code, perPage: 50 })).items;
+            expect(rows.filter((x: any) => x.paymentRef === 're_dash1' && x.status === 'ok')).toHaveLength(1);
+            expect(rows.filter((x: any) => x.paymentRef === 're_own')).toHaveLength(1);
+        } finally { (globalThis as any).fetch = realFetch; }
+        await fetch(`${BASE}/hulo-payments/settings`, { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ channelId: 1, reconcileRefunds: false }) });
+    });
+
+    it('public routes are rate limited per client IP', async () => {
+        const url = `${BASE}/hulo-payments/pay/${'c'.repeat(48)}`;
+        const statuses: number[] = [];
+        for (let i = 0; i < 125; i++) statuses.push((await fetch(url, { headers: { 'x-forwarded-for': '198.51.100.77' } })).status);
+        expect(statuses.slice(0, 120).every(s => s === 404)).toBe(true);
+        const last = await fetch(url, { headers: { 'x-forwarded-for': '198.51.100.77' } });
+        expect(last.status).toBe(429);
+        expect(Number(last.headers.get('retry-after'))).toBeGreaterThan(0);
+        // Another client is unaffected.
+        expect((await fetch(url, { headers: { 'x-forwarded-for': '198.51.100.78' } })).status).toBe(404);
     });
 });

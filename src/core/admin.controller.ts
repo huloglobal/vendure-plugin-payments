@@ -4,12 +4,13 @@ import type { Response } from 'express';
 import { allProviders, getProvider, ProviderArgs } from './provider';
 import { HANDLER_SHORT_NAMES, HANDLER_ARGS } from './handlers';
 import { adapterFor, isAdminApiSession } from '@huloglobal/vendure-licence-sdk';
-import { listHuloMethods, redactArgs, resolveMethod, clearCredentialCache } from './credentials';
+import { listHuloMethods, redactArgs, clearCredentialCache } from './credentials';
 import { LedgerService } from './ledger.service';
 import { PaymentsService } from './payments.service';
 import { SubscriptionService } from '../subscriptions/subscription.service';
 import { BUY_URL, getRuntime, PremiumRequiredError, requirePremium } from './runtime';
 import { HuloPaymentsEngagementService } from '../engagement.service';
+import { HuloPayLinkService, PayLinkError } from './pay-link.service';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean): boolean {
     const needed = write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
@@ -55,6 +56,7 @@ export class HuloPaymentsAdminController {
         private subscriptions: SubscriptionService,
         private paymentMethodService: PaymentMethodService,
         private engagement: HuloPaymentsEngagementService,
+        private payLinks: HuloPayLinkService,
     ) {}
 
     /** Field metadata for the Connect form, derived from the handler args so labels stay in one place. */
@@ -144,7 +146,11 @@ export class HuloPaymentsAdminController {
         if (opsEmail && !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(opsEmail)) return res.status(400).json({ error: 'opsEmail is not an e-mail address' });
         const providerOrder = (Array.isArray(body?.providerOrder) ? body.providerOrder : []).filter((c: any) => typeof c === 'string' && getProvider(c));
         try {
-            await this.ledger.saveSettings({ ...body, channelId, surcharges, hostedLogoUrl: logo, opsEmail, providerOrder });
+            // Fields the body leaves out keep their stored value (an older admin UI knows nothing of reconcileRefunds).
+            const current = await this.ledger.getSettings(channelId);
+            const merged: any = { ...current };
+            for (const k of ['fallbackOnFailure', 'reconcileRefunds', 'saveCardsDefault', 'dunningDays', 'hostedBrandName', 'hostedAccent']) if (body?.[k] !== undefined) merged[k] = body[k];
+            await this.ledger.saveSettings({ ...merged, channelId, surcharges: body?.surcharges !== undefined ? surcharges : current.surcharges, hostedLogoUrl: body?.hostedLogoUrl !== undefined ? logo : current.hostedLogoUrl, opsEmail: body?.opsEmail !== undefined ? opsEmail : current.opsEmail, providerOrder: Array.isArray(body?.providerOrder) ? providerOrder : current.providerOrder });
             return res.json({ ok: true, settings: await this.ledger.getSettings(channelId) });
         } catch (e) { return fail(res, e); }
     }
@@ -275,31 +281,39 @@ export class HuloPaymentsAdminController {
         return out;
     }
 
-    /** Pay-by-link for any order that still needs payment (draft orders, quotes, phone orders). */
+    /**
+     * Pay link for any order that still needs payment (draft orders, quotes, phone orders) — free.
+     * `mode: 'hosted'` (the default when no `methodCode` is given) is the plugin's own hosted page;
+     * `mode: 'provider'` (the default when a `methodCode` is given) a provider-hosted link.
+     */
     @Post('pay-link')
     async payLink(@Ctx() ctx: RequestContext, @Res() res: Response, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
+        const mode = body?.mode === 'hosted' || body?.mode === 'provider' ? body.mode : (body?.methodCode ? 'provider' : 'hosted');
         try {
-            requirePremium('Pay by link');
-            const order = await this.orderService.findOneByCode(ctx, String(body?.orderCode || ''), ['customer', 'lines', 'lines.productVariant', 'channels']);
-            if (!order) return res.status(404).json({ error: 'order not found' });
-            if (['PaymentSettled', 'PaymentAuthorized', 'Delivered', 'Shipped', 'Cancelled'].includes(order.state)) return res.status(400).json({ error: `order is ${order.state}` });
-            const channelId = Number((order.channels || []).find((c: any) => c.code !== '__default_channel__')?.id || order.channels?.[0]?.id) || undefined;
-            const methods = await listHuloMethods(this.connection, channelId);
-            const method = body?.methodCode ? methods.find(m => m.paymentMethodCode === body.methodCode || m.handlerCode === body.methodCode)
-                : methods.find(m => m.enabled && getProvider(m.handlerCode)?.createPayLink);
-            const provider = method ? getProvider(method.handlerCode) : undefined;
-            if (!method || !provider?.createPayLink) return res.status(400).json({ error: 'no enabled provider with pay-by-link on this channel' });
-            const resolved = await resolveMethod(this.connection, method.handlerCode, channelId, method.paymentMethodCode);
-            const hours = Math.max(1, Math.min(24 * 30, Number(body?.expiresInHours) || 72));
-            const link = await provider.createPayLink(resolved!.args, {
-                orderCode: order.code, amount: order.totalWithTax, currency: order.currencyCode, description: `Order ${order.code}`,
-                customerEmail: order.customer?.emailAddress, returnUrl: /^https:\/\/[^\s]+$/i.test(String(body?.returnUrl || '')) ? String(body.returnUrl).slice(0, 1000) : `${getRuntime().publicBaseUrl()}/checkout/confirmation/${order.code}`,
-                expiresAt: new Date(Date.now() + hours * 3600_000).toISOString(),
-                lines: (order.lines || []).map(l => ({ name: l.productVariant?.name || 'Item', quantity: l.quantity, amount: l.proratedUnitPriceWithTax ?? l.unitPriceWithTax })),
+            const link = await this.payLinks.create(ctx, {
+                orderCode: String(body?.orderCode || '').trim(), mode, methodCode: body?.methodCode ? String(body.methodCode) : undefined,
+                expiresInHours: Number(body?.expiresInHours) || undefined, returnUrl: body?.returnUrl ? String(body.returnUrl) : undefined,
+                locale: body?.locale ? String(body.locale) : undefined, createdBy: `admin ${ctx.activeUserId}`,
             });
-            await this.ledger.record({ channelId: channelId || null, provider: provider.code, kind: 'paylink', status: 'pending', orderId: order.id as number, orderCode: order.code, paymentRef: link.ref, amount: order.totalWithTax, currency: order.currencyCode, reason: `created by admin ${ctx.activeUserId}`, meta: { url: link.url, expiresAt: link.expiresAt } });
-            return res.json({ ok: true, url: link.url, ref: link.ref, expiresAt: link.expiresAt, provider: provider.code, amount: order.totalWithTax, currency: order.currencyCode });
-        } catch (e) { return fail(res, e); }
+            return res.json({ ok: true, ...link });
+        } catch (e: any) {
+            if (e instanceof PayLinkError) {
+                const status = e.code === 'order-not-found' ? 404 : e.code === 'licence-required' ? 402 : 400;
+                return res.status(status).json({ error: e.code === 'licence-required' ? 'licence-required' : e.message, code: e.code, message: e.message, ...(status === 402 ? { buyUrl: BUY_URL } : {}) });
+            }
+            return fail(res, e);
+        }
+    }
+
+    /** Pay links issued for one order (`?orderCode=`). */
+    @Get('pay-links')
+    async payLinksList(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
+        if (denyUnlessAdmin(ctx, res, false)) return;
+        const code = String(q?.orderCode || '').trim();
+        if (!code) return res.status(400).json({ error: 'orderCode required' });
+        const order = await this.orderService.findOneByCode(ctx, code.slice(0, 64));
+        if (!order) return res.status(404).json({ error: 'order not found' });
+        return res.json({ items: await this.payLinks.listForOrder(order.code) });
     }
 }

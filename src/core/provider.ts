@@ -113,6 +113,8 @@ export interface NormalisedEvent {
     refundRef?: string;
     /** Refund events: the amount of that specific refund in Vendure minor units (Stripe's `amount_refunded` is cumulative). */
     refundAmount?: number;
+    /** Refund events: everything refunded on the payment so far, when the provider reports that instead of (or as well as) the refund itself. */
+    refundedTotal?: number;
     /** Provider subscription reference where relevant. */
     subscriptionRef?: string;
     amount?: number;
@@ -244,7 +246,11 @@ export interface PaymentProvider {
     /** Charge a stored token for a self-scheduled renewal. */
     chargeStored?(args: ProviderArgs, input: { customerRef: string; paymentRef: string; amount: number; currency: string; reference: string; description: string }): Promise<PaymentOutcome>;
     createPayLink?(args: ProviderArgs, input: PayLinkInput): Promise<PayLinkOutcome>;
+    /** The payment's refunds as the provider has them (dashboard-refund reconciliation when an event names no refund). */
+    listRefunds?(args: ProviderArgs, paymentRef: string): Promise<ProviderRefund[]>;
 }
+
+export interface ProviderRefund { id: string; amount: number; status: 'succeeded' | 'pending' | 'failed'; created?: number }
 
 const registry = new Map<ProviderCode, PaymentProvider>();
 export function registerProvider(p: PaymentProvider): void { registry.set(p.code, p); }

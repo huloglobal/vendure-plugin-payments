@@ -12,10 +12,12 @@ export const ADMIN_ROUTE = 'hulo-payments';
 
 /** What the free tier loses — shown in the trial/free banners and the weekly report. */
 export const PREMIUM_FEATURES = [
-    'All 11 providers (free tier: Stripe + bank transfer)',
-    'Hosted checkout page and pay-by-link',
+    'Adyen, PayPal, Mollie, Square, Braintree, GoCardless, Checkout.com and Coinbase Commerce (free: Stripe, bank transfer, pay later)',
     'Subscriptions with dunning',
-    'Routing rules and surcharges',
+    'Saved cards',
+    'Payment surcharges',
+    'Fallback to the next provider after a decline',
+    'Weekly report and set-up checklist',
 ];
 
 export interface StatDef {

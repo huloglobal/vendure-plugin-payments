@@ -6,6 +6,7 @@ import { SubscriptionService } from '../subscriptions/subscription.service';
 import { PremiumRequiredError, getRuntime } from './runtime';
 import { HostedCheckoutService } from './hosted.service';
 import { getOptions } from '../plugin';
+import { fallbackActive, reorderAfterFailure } from './fallback';
 
 /**
  * An absolute http(s) URL the hosted page may send the customer back to.
@@ -83,8 +84,12 @@ export const shopApiExtensions = gql`
         countryCode: String
     }
     extend type Query {
-        """Payment providers available for the active order, preferred first."""
-        huloPaymentProviders: [HuloPaymentProviderInfo!]!
+        """
+        Payment providers available for the active order, preferred first. Pass failedMethodCode after a
+        decline: when the channel's fallback is on (licensed), that method moves to the end and the next
+        provider in the routing order becomes preferred.
+        """
+        huloPaymentProviders(failedMethodCode: String): [HuloPaymentProviderInfo!]!
         """Cards / methods the signed-in customer has saved with any provider."""
         huloSavedPaymentMethods: [HuloSavedPaymentMethod!]!
         """The signed-in customer's subscriptions."""
@@ -114,10 +119,13 @@ export class HuloPaymentsShopResolver {
 
     @Query()
     @Allow(Permission.Public)
-    async huloPaymentProviders(@Ctx() ctx: RequestContext) {
+    async huloPaymentProviders(@Ctx() ctx: RequestContext, @Args() args: { failedMethodCode?: string }) {
         const order = await this.payments.activeOrderOrThrow(ctx).catch(() => null);
         if (!order) return [];
-        return this.payments.offeredProviders(ctx, order);
+        const offered = await this.payments.offeredProviders(ctx, order);
+        const failed = typeof args?.failedMethodCode === 'string' ? args.failedMethodCode.slice(0, 64) : '';
+        if (!failed) return offered;
+        return fallbackActive(await this.payments.channelSettings(ctx.channelId as number), getRuntime().hasPremiumAccess()) ? reorderAfterFailure(offered, failed) : offered;
     }
 
     @Query()

@@ -26,8 +26,14 @@ export interface ChannelSettings {
     channelId: number;
     /** Provider handler codes in preferred order (first = default). */
     providerOrder: string[];
-    /** Offer the next provider when the first declines. */
+    /** After a decline, offer the next provider in `providerOrder` first (premium; see core/fallback.ts). */
     fallbackOnFailure: boolean;
+    /**
+     * Refunds made in the provider's own dashboard become Vendure refunds on the order's payment
+     * (once each, never more than is left to refund). Off by default so an existing install's
+     * refund handling does not change until the admin turns it on.
+     */
+    reconcileRefunds: boolean;
     /** Offer "save this card" to signed-in customers by default. */
     saveCardsDefault: boolean;
     /** Per handler code: { type: 'percent'|'fixed', value } added as a surcharge line. */
@@ -45,6 +51,7 @@ export interface ChannelSettings {
 export const DEFAULT_SETTINGS: Omit<ChannelSettings, 'channelId'> = {
     providerOrder: ['hulo-stripe', 'hulo-adyen', 'hulo-checkout-com', 'hulo-square', 'hulo-braintree', 'hulo-paypal', 'hulo-mollie', 'hulo-gocardless', 'hulo-coinbase', 'hulo-bank-transfer', 'hulo-pay-later'],
     fallbackOnFailure: true,
+    reconcileRefunds: false,
     saveCardsDefault: true,
     surcharges: {},
     opsEmail: '',
@@ -93,9 +100,40 @@ export class LedgerService implements OnModuleInit {
     /** A pay-by-link was issued for this order and nothing has completed it yet. */
     async hasPendingPayLink(orderCode: string): Promise<boolean> {
         const rows: any[] = await this.db.query(
-            `SELECT id FROM hulo_payment_txn WHERE kind = 'paylink' AND status = 'pending' AND orderCode = ? ORDER BY id DESC LIMIT 1`, [orderCode],
+            `SELECT id FROM hulo_payment_txn WHERE kind = 'paylink' AND status = 'pending' AND orderCode = ? AND provider <> 'hulo-hosted' ORDER BY id DESC LIMIT 1`, [orderCode],
         ).catch(() => []);
         return !!rows?.length;
+    }
+
+    /** Every pay link issued for an order, newest first (provider links and hosted-page links). */
+    async payLinksFor(orderCode: string): Promise<Array<{ id: number; provider: string; status: string; amount: number | null; currency: string | null; ref: string | null; url: string | null; expiresAt: string | null; mode: 'hosted' | 'provider'; createdAt: any }>> {
+        const rows: any[] = await this.db.query(
+            `SELECT id, provider, status, amount, currency, paymentRef, meta, createdAt FROM hulo_payment_txn WHERE kind = 'paylink' AND orderCode = ? ORDER BY id DESC LIMIT 50`, [orderCode],
+        ).catch(() => []);
+        return rows.map(r => {
+            let meta: any = {};
+            try { meta = r.meta ? JSON.parse(r.meta) : {}; } catch { /* keep empty */ }
+            return { id: Number(r.id), provider: r.provider, status: r.status, amount: r.amount == null ? null : Number(r.amount), currency: r.currency || null, ref: r.paymentRef || null, url: meta.url || null, expiresAt: meta.expiresAt || null, mode: r.provider === 'hulo-hosted' ? 'hosted' : 'provider', createdAt: r.createdAt };
+        });
+    }
+
+    /** A hosted-page pay link was paid: its pending ledger row becomes `ok` (once). */
+    async completeHostedPayLink(orderCode: string, ref: string): Promise<void> {
+        await this.db.query(
+            `UPDATE hulo_payment_txn SET status = 'ok' WHERE kind = 'paylink' AND provider = 'hulo-hosted' AND status = 'pending' AND orderCode = ? AND paymentRef = ?`, [orderCode, ref],
+        ).catch(() => undefined);
+    }
+
+    /**
+     * True when this refund id was written by the plugin's own refund flow (the handler's
+     * `createRefund` records the provider's refund id before Vendure commits its refund).
+     * Rows written for refunds reconciled from the provider's dashboard carry `"origin":"provider"`.
+     */
+    async isOwnRefund(provider: string, refundRef: string): Promise<boolean> {
+        const rows: any[] = await this.db.query(
+            `SELECT meta FROM hulo_payment_txn WHERE kind = 'refund' AND provider = ? AND paymentRef = ? ORDER BY id DESC LIMIT 5`, [provider, String(refundRef).slice(0, 190)],
+        ).catch(() => []);
+        return rows.some(r => !/"origin":"provider"/.test(String(r.meta || '')));
     }
 
     async ensureSchema(): Promise<void> {
@@ -155,6 +193,8 @@ export class LedgerService implements OnModuleInit {
         await this.addColumnIfMissing('hulo_payment_settings', 'hostedBrandName', `VARCHAR(120) NOT NULL DEFAULT ''`);
         await this.addColumnIfMissing('hulo_payment_settings', 'hostedAccent', `VARCHAR(16) NOT NULL DEFAULT '#1d4ed8'`);
         await this.addColumnIfMissing('hulo_payment_settings', 'hostedLogoUrl', `VARCHAR(500) NOT NULL DEFAULT ''`);
+        // 0.4.0: reconcile refunds made in the provider dashboard (off until the admin turns it on).
+        await this.addColumnIfMissing('hulo_payment_settings', 'reconcileRefunds', `TINYINT NOT NULL DEFAULT 0`);
         // 0.2.8: the admin list and dashboard filter by channel; Vendure never indexes payment.transactionId (webhook lookups).
         for (const ddl of [
             'CREATE INDEX IF NOT EXISTS idx_hpt_channel ON hulo_payment_txn (channelId, id)',
@@ -290,6 +330,7 @@ export class LedgerService implements OnModuleInit {
             channelId,
             providerOrder,
             fallbackOnFailure: !!Number(row.fallbackOnFailure ?? 1),
+            reconcileRefunds: !!Number(row.reconcileRefunds ?? 0),
             saveCardsDefault: !!Number(row.saveCardsDefault ?? 1),
             surcharges,
             opsEmail: row.opsEmail || '',
@@ -302,13 +343,13 @@ export class LedgerService implements OnModuleInit {
 
     async saveSettings(s: ChannelSettings): Promise<void> {
         await this.db.query(
-            `INSERT INTO hulo_payment_settings (channelId, providerOrder, fallbackOnFailure, saveCardsDefault, surchargeJson, opsEmail, dunningDays, hostedBrandName, hostedAccent, hostedLogoUrl, updatedAt)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-             ON DUPLICATE KEY UPDATE providerOrder = VALUES(providerOrder), fallbackOnFailure = VALUES(fallbackOnFailure),
+            `INSERT INTO hulo_payment_settings (channelId, providerOrder, fallbackOnFailure, reconcileRefunds, saveCardsDefault, surchargeJson, opsEmail, dunningDays, hostedBrandName, hostedAccent, hostedLogoUrl, updatedAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE providerOrder = VALUES(providerOrder), fallbackOnFailure = VALUES(fallbackOnFailure), reconcileRefunds = VALUES(reconcileRefunds),
                 saveCardsDefault = VALUES(saveCardsDefault), surchargeJson = VALUES(surchargeJson), opsEmail = VALUES(opsEmail),
                 dunningDays = VALUES(dunningDays), hostedBrandName = VALUES(hostedBrandName), hostedAccent = VALUES(hostedAccent), hostedLogoUrl = VALUES(hostedLogoUrl), updatedAt = NOW()`,
             [s.channelId, JSON.stringify((s.providerOrder || []).filter(c => typeof c === 'string').slice(0, 12)),
-             s.fallbackOnFailure ? 1 : 0, s.saveCardsDefault ? 1 : 0, JSON.stringify(s.surcharges || {}).slice(0, 4000),
+             s.fallbackOnFailure ? 1 : 0, s.reconcileRefunds ? 1 : 0, s.saveCardsDefault ? 1 : 0, JSON.stringify(s.surcharges || {}).slice(0, 4000),
              String(s.opsEmail || '').slice(0, 190), Math.max(1, Math.min(60, Number(s.dunningDays) || 7)),
              String(s.hostedBrandName || '').slice(0, 120), /^#[0-9a-fA-F]{3,8}$/.test(String(s.hostedAccent || '')) ? String(s.hostedAccent) : '#1d4ed8', String(s.hostedLogoUrl || '').slice(0, 500)],
             { conflictColumns: ['channelId'] });

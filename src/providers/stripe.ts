@@ -5,7 +5,7 @@ import {
     SavedMethod, SessionOptions, SubscriptionCreateInput, SubscriptionOutcome, SubscriptionPlanInput, WebhookVerification,
 } from '../core/provider';
 import { idem, request, safeEqual } from '../core/rest';
-import type { CredentialCheck, WebhookSetup } from '../core/provider';
+import type { CredentialCheck, ProviderRefund, WebhookSetup } from '../core/provider';
 import { fromProviderMinor, toProviderMinor } from '../core/money';
 
 const API = 'https://api.stripe.com/v1';
@@ -155,6 +155,15 @@ export const stripeProvider: PaymentProvider = {
             idempotencyKey: idem('hulo-ref', paymentRef, amount, reason, Math.floor(Date.now() / 60_000).toString(36)),
         });
         return { state: r.status === 'succeeded' ? 'Settled' : r.status === 'failed' ? 'Failed' : 'Pending', transactionId: r.id, metadata: { refundId: r.id, status: r.status } };
+    },
+
+    async listRefunds(args, paymentRef): Promise<ProviderRefund[]> {
+        if (!/^pi_[A-Za-z0-9]+$/.test(String(paymentRef || ''))) return [];
+        const r = await stripe(args, `/refunds?payment_intent=${encodeURIComponent(paymentRef)}&limit=100`);
+        return ((r?.data || []) as any[]).map(x => ({
+            id: String(x.id), amount: fromProviderMinor(Number(x.amount || 0), String(x.currency || 'gbp').toUpperCase()),
+            status: x.status === 'succeeded' ? 'succeeded' as const : x.status === 'failed' || x.status === 'canceled' ? 'failed' as const : 'pending' as const, created: Number(x.created || 0),
+        }));
     },
 
     async verifyWebhook(args, rawBody, headers): Promise<WebhookVerification> {
@@ -314,7 +323,7 @@ export function normaliseStripeEvent(ev: any): NormalisedEvent {
             // `amount_refunded` is cumulative; the specific refund is the newest succeeded entry of the
             // charge's refund list (present when the endpoint's API version still embeds it).
             const latest = ((o.refunds?.data || []) as any[]).filter(r => r?.status === 'succeeded').sort((a, b) => Number(b.created || 0) - Number(a.created || 0))[0];
-            return { ...base, foreign, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(latest?.amount ?? o.amount_refunded), currency: cur, refundRef: latest?.id, refundAmount: money(latest?.amount) };
+            return { ...base, foreign, type: 'refund.settled', orderCode: o.metadata?.orderCode, paymentRef: o.payment_intent, amount: money(latest?.amount ?? o.amount_refunded), currency: cur, refundRef: latest?.id, refundAmount: money(latest?.amount), refundedTotal: money(o.amount_refunded) };
         }
         case 'charge.refund.updated':
         case 'refund.updated':

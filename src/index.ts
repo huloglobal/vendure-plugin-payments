@@ -16,3 +16,6 @@ export { gocardlessProvider } from './providers/gocardless';
 export { checkoutComProvider } from './providers/checkout-com';
 export { coinbaseProvider } from './providers/coinbase';
 export { bankTransferProvider, payLaterProvider } from './providers/offline';
+export { HuloPayLinkService, PayLinkError, CreatePayLinkInput, PayLinkResult, PayLinkSummary, PayLinkMode, PayLinkErrorCode } from './core/pay-link.service';
+export { DEFAULT_RATE_LIMITS, RateLimitOptions } from './core/rate-limit';
+export { reorderAfterFailure, fallbackSuggestions } from './core/fallback';

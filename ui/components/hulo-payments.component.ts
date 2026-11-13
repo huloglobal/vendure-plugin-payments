@@ -272,17 +272,18 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
             <div class="two-col">
                 <div class="card"><div class="card-block">
                     <h3 class="step-title">Send a payment link</h3>
-                    <p class="hint">For any order that still needs paying — draft orders built in the admin, accepted quotes, phone orders. The customer pays on the provider's hosted page; the order moves to PaymentSettled by webhook. <span *ngIf="!dash?.premium" class="warn-inline">Needs a licence.</span></p>
+                    <p class="hint">For any order that still needs paying — draft orders built in the admin, accepted quotes, phone orders. <strong>This shop's payment page</strong> offers every method enabled on the order's channel (bank transfer and pay later included) and records the payment like a checkout. A <strong>provider link</strong> sends the customer to the provider's own page instead; the webhook records the payment. Free; providers other than Stripe need a licence.</p>
                     <div class="form-grid">
                         <div class="form-row"><label>Order code</label><input class="form-input" style="width:100%" [(ngModel)]="linkOrder" placeholder="e.g. A1B2C3D4E5F6G7H8"></div>
-                        <div class="form-row"><label>Provider</label><select class="form-select" style="width:100%" [(ngModel)]="linkProvider"><option value="">Preferred provider</option><option *ngFor="let p of linkProviders()" [value]="p.code">{{ p.name }}</option></select></div>
+                        <div class="form-row"><label>Link to</label><select class="form-select" style="width:100%" [(ngModel)]="linkMode"><option value="hosted">This shop's payment page</option><option value="provider">A provider's payment page</option></select></div>
+                        <div class="form-row" *ngIf="linkMode === 'provider'"><label>Provider</label><select class="form-select" style="width:100%" [(ngModel)]="linkProvider"><option value="">Preferred provider</option><option *ngFor="let p of linkProviders()" [value]="p.code">{{ p.name }}</option></select></div>
                         <div class="form-row"><label>Expires in</label><select class="form-select" style="width:100%" [(ngModel)]="linkHours"><option [ngValue]="24">24 hours</option><option [ngValue]="72">3 days</option><option [ngValue]="168">7 days</option><option [ngValue]="720">30 days</option></select></div>
                     </div>
                     <div class="picker" style="margin-top:12px">
                         <button class="gbtn gbtn-primary gbtn-sm" (click)="createLink()" [disabled]="busy || !linkOrder">{{ busy ? 'Creating…' : 'Create link' }}</button>
                     </div>
                     <div *ngIf="link" class="status-sentence" style="margin-top:14px">
-                        <strong>{{ providerName(link.provider) }} · {{ money(link.amount, link.currency) }}</strong><br>
+                        <strong>{{ link.mode === 'hosted' ? 'Payment page' : providerName(link.provider) }} · {{ money(link.amount, link.currency) }}</strong><br>
                         <span class="url">{{ link.url }}</span>
                         <div class="picker" style="margin-top:8px"><button class="gbtn gbtn-outline gbtn-sm" (click)="copy(link.url)">{{ copied ? 'Copied ✓' : 'Copy link' }}</button><a [href]="link.url" target="_blank" class="gbtn gbtn-outline gbtn-sm">Open ↗</a><span class="hint" style="margin:0" *ngIf="link.expiresAt">expires {{ link.expiresAt | date:'d MMM y HH:mm' }}</span></div>
                     </div>
@@ -291,7 +292,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <h3 class="step-title">Recent links</h3>
                     <table class="table" *ngIf="links?.items?.length; else noLinks">
                         <thead><tr><th>When</th><th>Order</th><th class="num">Amount</th><th>Provider</th><th>Status</th></tr></thead>
-                        <tbody><tr *ngFor="let t of links.items; trackBy: trackById"><td class="nowrap">{{ relative(t.createdAt) }}</td><td><a *ngIf="t.orderId" [routerLink]="['/orders', t.orderId]">{{ t.orderCode }}</a></td><td class="num">{{ money(t.amount, t.currency) }}</td><td>{{ providerName(t.provider) }}</td><td><span class="pill" [ngClass]="t.status">{{ t.status === 'pending' ? 'sent' : t.status === 'ok' ? 'paid' : t.status }}</span></td></tr></tbody>
+                        <tbody><tr *ngFor="let t of links.items; trackBy: trackById"><td class="nowrap">{{ relative(t.createdAt) }}</td><td><a *ngIf="t.orderId" [routerLink]="['/orders', t.orderId]">{{ t.orderCode }}</a></td><td class="num">{{ money(t.amount, t.currency) }}</td><td>{{ t.provider === 'hulo-hosted' ? 'Payment page' : providerName(t.provider) }}</td><td><span class="pill" [ngClass]="t.status">{{ t.status === 'pending' ? 'sent' : t.status === 'ok' ? 'paid' : t.status }}</span></td></tr></tbody>
                     </table>
                     <ng-template #noLinks><p class="hint">No links created yet.</p></ng-template>
                 </div></div>
@@ -420,11 +421,13 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                     <select class="form-select" [(ngModel)]="cfgIdx" (ngModelChange)="cfg = settingsList[cfgIdx]"><option *ngFor="let s of settingsList; let i = index" [ngValue]="i">{{ s.channelCode }}</option></select></div>
                 <ng-container *ngIf="cfg">
                     <h3 class="step-title" style="margin-top:14px">Routing</h3>
-                    <p class="hint">The first configured provider in this order is offered first; the storefront can fall back to the next when a payment is declined. <span *ngIf="!dash?.premium" class="warn-inline">Routing, surcharges and saved cards need a licence.</span></p>
+                    <p class="hint">The first configured provider in this order is offered first (free). With fallback on, after a decline the hosted page — and <span class="code-inline">huloPaymentProviders(failedMethodCode)</span> for your own checkout — puts the next provider first and the failed one last. <span *ngIf="!dash?.premium" class="warn-inline">Fallback, surcharges and saved cards need a licence.</span></p>
                     <div class="form-grid">
                         <div class="form-row wide"><label>Provider order</label>
                             <div class="picker"><ng-container *ngFor="let code of cfg.providerOrder; let i = index"><span class="pill">{{ i + 1 }}. {{ providerName(code) }}</span><button class="gbtn gbtn-ghost gbtn-sm" (click)="moveProvider(i, -1)" [disabled]="i === 0" aria-label="Move up">↑</button><button class="gbtn gbtn-ghost gbtn-sm" (click)="moveProvider(i, 1)" [disabled]="i === cfg.providerOrder.length - 1" aria-label="Move down">↓</button></ng-container></div></div>
                         <div class="form-row"><label>Fall back to the next provider on decline</label><span class="gb-switch-group"><button class="gb-switch" role="switch" [attr.aria-checked]="cfg.fallbackOnFailure" [class.on]="cfg.fallbackOnFailure" (click)="cfg.fallbackOnFailure = !cfg.fallbackOnFailure"><span class="gb-switch-knob"></span></button><span>{{ cfg.fallbackOnFailure ? 'On' : 'Off' }}</span></span></div>
+                        <div class="form-row"><label>Record refunds made in the provider's dashboard on the order</label><span class="gb-switch-group"><button class="gb-switch" role="switch" [attr.aria-checked]="cfg.reconcileRefunds" [class.on]="cfg.reconcileRefunds" (click)="cfg.reconcileRefunds = !cfg.reconcileRefunds"><span class="gb-switch-knob"></span></button><span>{{ cfg.reconcileRefunds ? 'On' : 'Off' }}</span></span></div>
+                        <div class="form-row wide" *ngIf="cfg.reconcileRefunds"><p class="hint" style="margin:0">A refund made in Stripe's (or another provider's) own dashboard becomes a settled refund on the Vendure payment, once, with a note in the order history — never more than is left to refund. Refunds made from the order page are never counted twice.</p></div>
                         <div class="form-row"><label>Offer "save this card" to signed-in customers</label><span class="gb-switch-group"><button class="gb-switch" role="switch" [attr.aria-checked]="cfg.saveCardsDefault" [class.on]="cfg.saveCardsDefault" (click)="cfg.saveCardsDefault = !cfg.saveCardsDefault"><span class="gb-switch-knob"></span></button><span>{{ cfg.saveCardsDefault ? 'On' : 'Off' }}</span></span></div>
                     </div>
                     <h3 class="step-title" style="margin-top:14px">Surcharges</h3>
@@ -457,6 +460,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
         <vdr-page-block *ngIf="tab==='settings' && digest">
             <div class="card"><div class="card-block">
                 <h3 class="step-title">Weekly report</h3>
+                <p class="hint warn-inline" *ngIf="digest.premium === false">The weekly report needs a licence (or the evaluation). Your settings are kept; nothing is sent until a licence is active.</p>
                 <p class="hint">Every Monday at 08:00 (server time) the plugin emails what it did last week — payments taken, refunds, disputes, subscriptions and failed renewals it recovered — plus the next set-up steps. Needs <span class="code-inline">SMTP_SERVER</span>, <span class="code-inline">SMTP_USER</span> and <span class="code-inline">SMTP_PASSWORD</span> in the host environment (the same transport as ops alerts).</p>
                 <div class="form-grid">
                     <div class="form-row"><label>Send the weekly report</label><span class="gb-switch-group"><button class="gb-switch" role="switch" [attr.aria-checked]="digest.enabled" [class.on]="digest.enabled" (click)="digest.enabled = !digest.enabled"><span class="gb-switch-knob"></span></button><span>{{ digest.enabled ? 'On' : 'Off' }}</span></span></div>
@@ -465,7 +469,7 @@ type Tab = 'overview' | 'methods' | 'transactions' | 'subscriptions' | 'paylink'
                 <p class="hint" style="margin-top:10px">Last sent {{ digest.lastSentAt ? (digest.lastSentAt | date:'d MMM y HH:mm') : 'never' }} · next {{ digest.nextDueAt ? (digest.nextDueAt | date:'d MMM y HH:mm') : '—' }}</p>
                 <div class="picker">
                     <button class="gbtn gbtn-primary gbtn-sm" (click)="saveDigest()" [disabled]="digestBusy">{{ digestBusy ? 'Saving…' : 'Save' }}</button>
-                    <button class="gbtn gbtn-outline gbtn-sm" (click)="sendTestDigest()" [disabled]="digestBusy">Send me a test</button>
+                    <button class="gbtn gbtn-outline gbtn-sm" (click)="sendTestDigest()" [disabled]="digestBusy || digest.premium === false">Send me a test</button>
                     <button class="gbtn gbtn-outline gbtn-sm" (click)="previewDigest()" [disabled]="digestBusy">Preview</button>
                 </div>
             </div></div>
@@ -801,7 +805,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     subs: any = null; subStatus = 'all'; subSearch = '';
     providers: any = null; events: any[] = [];
     settingsList: any[] | null = null; cfg: any = null; cfgIdx = 0;
-    linkOrder = ''; linkProvider = ''; linkHours = 72; link: any = null; links: any = null; copied = false;
+    linkOrder = ''; linkProvider = ''; linkMode: 'hosted' | 'provider' = 'hosted'; linkHours = 72; link: any = null; links: any = null; copied = false;
     connectFor = ''; connectChannel: number = 1; connectArgs: any = {}; connectResult: any = null;
     setup: { items: Array<{ key: string; label: string; done: boolean; hint: string; tab?: string; url?: string }>; complete: boolean } | null = null;
     digest: any = null; digestBusy = false;
@@ -858,7 +862,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     setupDone(): number { return (this.setup?.items || []).filter(i => i.done).length; }
     /** Hidden once complete, or after "Hide" — unless an item that was done then has come undone since. */
     setupVisible(): boolean {
-        if (!this.setup || this.setup.complete) return false;
+        if (!this.setup || this.setup.complete || this.setup.premium === false) return false;
         let hidden = ''; let doneThen: string[] = [];
         try { hidden = localStorage.getItem(HuloPaymentsComponent.SETUP_HIDDEN) || ''; doneThen = (localStorage.getItem(HuloPaymentsComponent.SETUP_HIDDEN + '-done') || '').split(',').filter(Boolean); } catch { /* storage unavailable */ }
         if (hidden !== '1') return true;
@@ -1060,7 +1064,7 @@ export class HuloPaymentsComponent implements OnInit, OnDestroy {
     }
     createLink() {
         this.busy = true; this.link = null; this.copied = false;
-        this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), methodCode: this.linkProvider || undefined, expiresInHours: this.linkHours }, this.h()).subscribe({
+        this.http.post<any>(`${API}/pay-link`, { orderCode: this.linkOrder.trim(), mode: this.linkMode, methodCode: this.linkMode === 'provider' ? (this.linkProvider || undefined) : undefined, expiresInHours: this.linkHours }, this.h()).subscribe({
             next: r => { this.busy = false; this.link = r; this.loadLinks(); this.cdr.markForCheck(); },
             error: e => { this.busy = false; this.notification.error(this.errMsg(e, 'Could not create the link', 'Pay by link')); this.cdr.markForCheck(); },
         });

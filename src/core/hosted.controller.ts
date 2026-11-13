@@ -11,6 +11,8 @@ import { esc, renderHostedPage } from './hosted-page';
 import { getProvider } from './provider';
 import { listHuloMethods } from './credentials';
 import { getRuntime } from './runtime';
+import { rateLimited } from './rate-limit';
+import { fallbackActive, fallbackSuggestions } from './fallback';
 
 /**
  * Public endpoints behind the hosted checkout token. Everything here acts
@@ -81,6 +83,7 @@ export class CspReportController {
 
     @Post('csp-report')
     report(@Req() req: Request, @Res() res: Response) {
+        if (rateLimited(req, res, 'cspReport')) return;
         const now = Date.now();
         if (now - this.window.start > 60_000) this.window = { start: now, n: 0 };
         if (++this.window.n <= CSP_LOG_PER_MINUTE) {
@@ -126,8 +129,26 @@ export class HostedCheckoutController {
         return { brand: s.hostedBrandName || (channelCode === '__default_channel__' ? 'Checkout' : channelCode), accent: s.hostedAccent || '#1d4ed8', logoUrl: s.hostedLogoUrl || '' };
     }
 
+    /**
+     * After a failed attempt with `methodCode`: the other methods to offer, next in the channel's
+     * routing order first — only when the channel's "fall back on decline" is on and the install
+     * has premium access (B9). Otherwise undefined and the response is what it always was.
+     */
+    private async fallbackAfter(ctx: RequestContext, order: Order, channelId: number, methodCode: string): Promise<Array<{ methodCode: string; name: string }> | undefined> {
+        try {
+            if (!fallbackActive(await this.ledger.getSettings(channelId), getRuntime().hasPremiumAccess())) return undefined;
+            const offered = await this.payments.offeredProviders(ctx, order);
+            const next = fallbackSuggestions(offered, methodCode);
+            return next.length ? next : undefined;
+        } catch (e: any) {
+            Logger.verbose(`fallback lookup failed for ${order.code}: ${e?.message || e}`, loggerCtx);
+            return undefined;
+        }
+    }
+
     @Get(':token')
     async page(@Param('token') token: string, @Req() req: Request, @Res() res: Response) {
+        if (rateLimited(req, res, 'hostedPage')) return;
         const loaded = await this.load(token);
         if (!loaded) return res.status(404).type('html').send(this.gone('This payment link is not valid.'));
         const { s, ctx, order } = loaded;
@@ -154,7 +175,8 @@ export class HostedCheckoutController {
     }
 
     @Post(':token/session')
-    async session(@Param('token') token: string, @Body() body: any, @Res() res: Response) {
+    async session(@Param('token') token: string, @Body() body: any, @Req() req: Request, @Res() res: Response) {
+        if (rateLimited(req, res, 'hostedAction')) return;
         const loaded = await this.load(token);
         if (!loaded || !this.hosted.isLive(loaded.s)) return res.status(410).json({ error: 'expired', message: 'This payment link has expired.' });
         const { s, ctx } = loaded;
@@ -186,18 +208,20 @@ export class HostedCheckoutController {
             return res.status(200).json({ ...session, flow, name: provider?.name });
         } catch (e: any) {
             Logger.warn(`hosted session failed (${methodCode}) for ${order.code}: ${e.message}`, loggerCtx);
-            return res.status(400).json({ error: 'session', message: 'This payment method is not available right now. Please choose another.' });
+            const fallback = await this.fallbackAfter(ctx, order, s.channelId, methodCode);
+            return res.status(400).json({ error: 'session', message: 'This payment method is not available right now. Please choose another.', ...(fallback ? { fallback } : {}) });
         }
     }
 
     @Post(':token/complete')
-    async complete(@Param('token') token: string, @Body() body: any, @Res() res: Response) {
+    async complete(@Param('token') token: string, @Body() body: any, @Req() req: Request, @Res() res: Response) {
+        if (rateLimited(req, res, 'hostedAction')) return;
         const loaded = await this.load(token);
         if (!loaded) return res.status(404).json({ paid: false, message: 'This payment link is not valid.' });
         const { s, ctx, order } = loaded;
         securityHeaders(res);
         const already = PAID_STATES.includes(order.state);
-        if (already) { await this.hosted.complete(token); return res.status(200).json({ paid: true, redirect: this.returnUrl(s.returnUrl, order.code, 'paid'), message: 'This order is already paid.' }); }
+        if (already) { await this.markComplete(token, s, order.code); return res.status(200).json({ paid: true, redirect: this.returnUrl(s.returnUrl, order.code, 'paid'), message: 'This order is already paid.' }); }
         if (!this.hosted.isLive(s)) return res.status(410).json({ paid: false, message: 'This payment link has expired.' });
         const methodCode = String(body?.methodCode || s.lastMethodCode || '');
         if (!METHOD_CODE_RE.test(methodCode)) return res.status(400).json({ paid: false, message: 'Choose a payment method first.' });
@@ -236,26 +260,34 @@ export class HostedCheckoutController {
                 return this.orderService.addPaymentToOrder(tctx, order.id, { method: methodCode, metadata });
             });
             if (r?.alreadyPaid) {
-                await this.hosted.complete(token);
+                await this.markComplete(token, s, order.code);
                 const state = String(r.state || '');
                 return res.status(200).json({ paid: true, state, redirect: this.returnUrl(s.returnUrl, order.code, state === 'PaymentSettled' ? 'paid' : 'pending'), message: 'Payment received.' });
             }
         } catch (e: any) {
             await this.hosted.releaseComplete(token);
             Logger.warn(`hosted complete failed (${methodCode}) for ${order.code}: ${e.message}`, loggerCtx);
-            return res.status(200).json({ paid: false, message: 'The payment could not be completed. Please try again or choose another method.' });
+            const fallback = await this.fallbackAfter(ctx, order, s.channelId, methodCode);
+            return res.status(200).json({ paid: false, message: 'The payment could not be completed. Please try again or choose another method.', ...(fallback ? { fallback } : {}) });
         }
         if (r?.errorCode) {
             await this.hosted.releaseComplete(token);
             const msg = r.paymentErrorMessage || 'The payment was not completed. Please try again or choose another method.';
             Logger.warn(`hosted complete (${methodCode}) for ${order.code}: ${r.message || r.errorCode}`, loggerCtx);
-            return res.status(200).json({ paid: false, message: msg });
+            const fallback = await this.fallbackAfter(ctx, order, s.channelId, methodCode);
+            return res.status(200).json({ paid: false, message: msg, ...(fallback ? { fallback } : {}) });
         }
-        await this.hosted.complete(token);
+        await this.markComplete(token, s, order.code);
         const state = r.state;
         const method = (await listHuloMethods(this.connection, s.channelId)).find(m => m.paymentMethodCode === methodCode);
         const offline = !!(method && getProvider(method.handlerCode)?.capabilities?.offline);
         return res.status(200).json({ paid: true, state, redirect: this.returnUrl(s.returnUrl, order.code, state === 'PaymentSettled' ? 'paid' : 'pending'), message: offline ? 'Order placed — you will find the payment details in your confirmation email.' : state === 'PaymentSettled' ? 'Payment received — taking you back to the shop…' : 'Payment received and awaiting confirmation — taking you back to the shop…' });
+    }
+
+    /** Spend the token; a hosted pay link's ledger row becomes `ok`. */
+    private async markComplete(token: string, s: { id: number; payLink?: number | boolean }, orderCode: string): Promise<void> {
+        await this.hosted.complete(token);
+        if (Number(s.payLink || 0)) await this.ledger.completeHostedPayLink(orderCode, `hosted:${s.id}`);
     }
 
     private returnUrl(base: string, orderCode: string, result: string): string {

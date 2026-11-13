@@ -19,7 +19,19 @@ export interface HostedSession {
     createdAt: string;
     expiresAt: string;
     completedAt: string | null;
+    /** 1 when the session is a pay link issued from the admin or the pay-link service (longer lifetime, no storefront cart). */
+    payLink?: number | boolean;
 }
+
+export interface HostedCreateOptions {
+    /** Lifetime in ms (default 2 h; pay links up to 30 days). */
+    ttlMs?: number;
+    /** Mark the session as a pay link. */
+    payLink?: boolean;
+}
+
+/** Longest a hosted pay link may live. */
+export const MAX_PAY_LINK_TTL_MS = 30 * 86_400_000;
 
 const TTL_MS = 2 * 3600_000;
 
@@ -75,6 +87,8 @@ export class HostedCheckoutService implements OnModuleInit {
         for (const ddl of [
             'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS completingAt DATETIME NULL',
             'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS sessionCount INT NOT NULL DEFAULT 0',
+            // 0.4.0: hosted-page pay links (free): sessions issued for any unpaid order, not the active cart.
+            'ALTER TABLE hulo_hosted_session ADD COLUMN IF NOT EXISTS payLink TINYINT NOT NULL DEFAULT 0',
         ]) {
             try { await this.db.query(ddl); } catch (e: any) { if (!/duplicate|exists/i.test(String(e?.message || ''))) throw e; }
         }
@@ -118,12 +132,13 @@ export class HostedCheckoutService implements OnModuleInit {
         return Number(row?.sessionCount || 0);
     }
 
-    async create(orderId: ID, orderCode: string, channelId: number, returnUrl: string, cancelUrl: string, locale: string, preferredMethod?: string): Promise<HostedSession> {
+    async create(orderId: ID, orderCode: string, channelId: number, returnUrl: string, cancelUrl: string, locale: string, preferredMethod?: string, opts: HostedCreateOptions = {}): Promise<HostedSession> {
         const token = randomBytes(24).toString('hex');
-        const expires = new Date(Date.now() + TTL_MS);
+        const ttl = Math.max(60_000, Math.min(MAX_PAY_LINK_TTL_MS, Number(opts.ttlMs) || TTL_MS));
+        const expires = new Date(Date.now() + ttl);
         await this.db.query(
-            `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, lastMethodCode, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
-            [token, String(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires]);
+            `INSERT INTO hulo_hosted_session (token, orderId, orderCode, channelId, returnUrl, cancelUrl, locale, lastMethodCode, createdAt, expiresAt, payLink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?)`,
+            [token, String(orderId), orderCode, channelId, String(returnUrl || '').slice(0, 1000), String(cancelUrl || '').slice(0, 1000), String(locale || 'en-GB').slice(0, 16), preferredMethod ? String(preferredMethod).slice(0, 64) : null, expires, opts.payLink ? 1 : 0]);
         return (await this.find(token))!;
     }
 

@@ -45,6 +45,21 @@ export function takeWebhookPayment(orderCode: string, paymentRef: string | undef
     return hit && hit.until > Date.now() ? hit.facts : null;
 }
 
+/**
+ * Refunds this plugin is asking a provider for right now, by provider payment reference. The provider's
+ * webhook for such a refund can arrive before Vendure has committed its Refund row; dashboard-refund
+ * reconciliation must not mistake it for a refund made in the provider's dashboard.
+ */
+const ownRefundsInFlight = new Map<string, number>();
+export function ownRefundInFlight(paymentRef: string | null | undefined): boolean {
+    if (!paymentRef) return false;
+    const until = ownRefundsInFlight.get(String(paymentRef));
+    if (until === undefined) return false;
+    if (until <= Date.now()) { ownRefundsInFlight.delete(String(paymentRef)); return false; }
+    return true;
+}
+function beginOwnRefund(paymentRef: string): void { if (paymentRef) ownRefundsInFlight.set(String(paymentRef), Date.now() + 2 * WEBHOOK_MARK_TTL_MS); }
+
 const label = (v: string) => [{ languageCode: LanguageCode.en, value: v }];
 const secret = (l: string, d?: string) => ({ type: 'string' as const, label: label(l), description: d ? label(d) : undefined, ui: { component: 'password-form-input' } });
 const text = (l: string, d?: string, defaultValue = '') => ({ type: 'string' as const, label: label(l), description: d ? label(d) : undefined, defaultValue });
@@ -253,6 +268,8 @@ export function makeHandler(provider: PaymentProvider): PaymentMethodHandler {
         },
 
         async createRefund(ctx, input, amount, order, payment, args): Promise<CreateRefundResult> {
+            // Stays marked for two minutes: long enough for Vendure to commit the Refund the webhook will look for.
+            beginOwnRefund(payment.transactionId);
             try {
                 const r = await provider.refund(args as ProviderArgs, payment.transactionId, amount, order.currencyCode, String(input.reason || ''), payment.metadata || {});
                 await ledger?.record({ channelId: ctx.channelId as number, provider: provider.code, kind: 'refund', status: r.state === 'Settled' ? 'ok' : r.state === 'Failed' ? 'failed' : 'pending', orderId: order.id as number, orderCode: order.code, paymentRef: r.transactionId || payment.transactionId, amount, currency: order.currencyCode, reason: input.reason || null, meta: r.metadata || null });

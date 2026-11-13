@@ -14,6 +14,9 @@ import { ADMIN_ROUTE, PLUGIN_NAME, PREMIUM_FEATURES, STAT_DEFS, SetupItem, setup
 
 export { ADMIN_ROUTE, PLUGIN_NAME, PREMIUM_FEATURES, STAT_DEFS, SetupItem } from './core/engagement-rules';
 
+export { PremiumWeeklyDigest } from './core/premium-digest';
+import { PremiumWeeklyDigest } from './core/premium-digest';
+
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
 
@@ -29,7 +32,7 @@ const WEEK_MS = 7 * DAY_MS;
 @Injectable()
 export class HuloPaymentsEngagementService implements OnApplicationBootstrap {
     readonly prefs: PluginPrefs;
-    readonly digest: WeeklyDigest;
+    readonly digest: PremiumWeeklyDigest;
 
     constructor(
         private connection: TransactionalConnection,
@@ -38,14 +41,14 @@ export class HuloPaymentsEngagementService implements OnApplicationBootstrap {
         private processContext: ProcessContext,
     ) {
         this.prefs = new PluginPrefs((sql, params, opts) => this.db.query(sql, params, opts), PLUGIN_ID);
-        this.digest = new WeeklyDigest({
+        this.digest = new PremiumWeeklyDigest({
             pluginId: PLUGIN_ID,
             pluginName: PLUGIN_NAME,
             prefs: this.prefs,
             collect: (from, to) => this.collect(from, to),
             send: (to, mail) => this.send(to, mail),
             defaultRecipient: () => this.defaultRecipient(),
-        });
+        }, () => HuloPaymentsPlugin.hasPremiumAccess());
     }
 
     private get db() { return adapterFor(this.connection.rawConnection); }
@@ -130,7 +133,13 @@ export class HuloPaymentsEngagementService implements OnApplicationBootstrap {
     }
 
     // ── Set-up checklist ────────────────────────────────────────────────
-    async setup(): Promise<{ items: SetupItem[]; complete: boolean }> {
+    /** The set-up checklist (licensed, 0.4.0): empty and `premium: false` on the free tier. */
+    async setup(): Promise<{ items: SetupItem[]; complete: boolean; premium: boolean }> {
+        if (!HuloPaymentsPlugin.hasPremiumAccess()) return { items: [], complete: true, premium: false };
+        return { ...(await this.checklist()), premium: true };
+    }
+
+    private async checklist(): Promise<{ items: SetupItem[]; complete: boolean }> {
         const o = getOptions();
         const methods = await listHuloMethods(this.connection).catch(() => []);
         const [ops] = await this.db.query(`SELECT COUNT(*) AS n FROM hulo_payment_settings WHERE opsEmail <> ''`).catch(() => [] as any[]);
@@ -204,7 +213,12 @@ export class HuloPaymentsEngagementService implements OnApplicationBootstrap {
         return this.prefs.get('eval.leadEmail');
     }
 
-    digestSettings(): Promise<WeeklyDigestSettings> { return this.digest.settings(); }
+    async digestSettings(): Promise<WeeklyDigestSettings & { premium: boolean }> {
+        const premium = HuloPaymentsPlugin.hasPremiumAccess();
+        const s = await this.digest.settings();
+        // Nothing goes out on the free tier, so there is no "next" send to show.
+        return { ...s, nextDueAt: premium ? s.nextDueAt : null, premium };
+    }
 
     // ── Banner + widget ─────────────────────────────────────────────────
     notice() {

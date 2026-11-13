@@ -137,7 +137,7 @@ export const mollieProvider: PaymentProvider = {
             events.push({ ...base, id: `${p.id}:${p.status}`, type, amount, reason: p.details?.failureReason,
                 subscription: p.mandateId ? { paymentRef: p.mandateId, customerRef: p.customerId } : undefined });
         }
-        if (refunded > 0) events.push({ ...base, id: `${p.id}:refunded:${refunded}`, type: 'refund.settled', amount: refunded });
+        if (refunded > 0) events.push({ ...base, id: `${p.id}:refunded:${refunded}`, type: 'refund.settled', amount: refunded, refundedTotal: refunded });
         if (charged > 0) events.push({ ...base, id: `${p.id}:chargeback:${charged}`, type: 'dispute.opened', amount: charged, reason: 'chargeback' });
         return { ok: true, events };
     },

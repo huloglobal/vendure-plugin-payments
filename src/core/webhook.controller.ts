@@ -7,6 +7,7 @@ import { getProvider } from './provider';
 import { listHuloMethods } from './credentials';
 import { LedgerService, loggerCtx } from './ledger.service';
 import { PaymentsService } from './payments.service';
+import { rateLimited } from './rate-limit';
 
 /**
  * Raw bodies for every provider webhook: signatures are computed over the
@@ -32,6 +33,7 @@ export class WebhookController {
      */
     @Post('webhook/:provider')
     async webhook(@Param('provider') providerCode: string, @Req() req: Request, @Res() res: Response) {
+        if (rateLimited(req, res, 'webhook')) return;
         const provider = getProvider(providerCode);
         if (!provider) return res.status(404).json({ error: 'unknown provider' });
         const raw: Buffer | string = Buffer.isBuffer(req.body) ? req.body : typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {});

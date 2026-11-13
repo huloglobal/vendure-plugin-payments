@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import {
-    ActiveOrderService, ChannelService, Customer, ID, Logger, Order, OrderService, RequestContext, RequestContextService, TransactionalConnection,
+    ActiveOrderService, ChannelService, Customer, HistoryService, ID, Logger, Order, OrderService, Payment, Refund, RequestContext, RequestContextService, TransactionalConnection,
 } from '@vendure/core';
+import { HistoryEntryType } from '@vendure/common/lib/generated-types';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
 import { ClientSession, NormalisedEvent, PaymentProvider, ProviderArgs, SavedMethod, SessionOptions, getProvider } from './provider';
 import { ResolvedMethod, listHuloMethods, resolveMethod } from './credentials';
 import { LedgerService, loggerCtx } from './ledger.service';
 import { getRuntime, requirePremium } from './runtime';
-import { clearSettledByWebhook, markSettledByWebhook, registerWebhookPayment } from './handlers';
+import { clearSettledByWebhook, markSettledByWebhook, ownRefundInFlight, registerWebhookPayment } from './handlers';
 import { request } from './rest';
 import { SURCHARGE_SKU_PREFIX, huloSurcharges, surchargeAmount, surchargeMatches, surchargeRule } from './surcharge';
 import { ensureMollieCustomer } from '../providers/mollie';
@@ -46,6 +47,7 @@ export class PaymentsService {
         private requestContextService: RequestContextService,
         private ledger: LedgerService,
         private subscriptions: SubscriptionService,
+        private historyService: HistoryService,
     ) {}
 
     private get db() { return adapterFor(this.connection.rawConnection); }
@@ -73,6 +75,9 @@ export class PaymentsService {
         if (out[0]) out[0].preferred = true;
         return out;
     }
+
+    /** The channel's routing / fallback / refund settings. */
+    channelSettings(channelId: number) { return this.ledger.getSettings(channelId); }
 
     async activeOrderOrThrow(ctx: RequestContext): Promise<Order> {
         const order = await this.activeOrderService.getActiveOrder(ctx, undefined);
@@ -286,6 +291,12 @@ export class PaymentsService {
                     Logger.verbose(`${providerCode} ${ev.type} ${ev.refundRef}: refund already settled, ledger row exists`, loggerCtx);
                     return;
                 }
+                // A refund nobody asked Vendure for (made in the provider's dashboard): when the channel
+                // reconciles refunds, it becomes a Vendure refund on the payment, once.
+                if (order && payment && !byRef && !target && ev.type === 'refund.settled' && (await this.ledger.getSettings(Number(channelId) || 1)).reconcileRefunds) {
+                    await this.reconcileProviderRefunds(ctx, order, payment, provider, method, ev, rec);
+                    return;
+                }
                 await rec('refund', ev.type === 'refund.settled' ? 'ok' : 'failed', { paymentRef: ev.refundRef || ev.paymentRef || null, amount: ev.refundAmount ?? ev.amount ?? null });
                 if (order && target && target.state === 'Pending' && ev.type === 'refund.settled') {
                     try { await this.orderService.settleRefund(ctx, { id: target.id, transactionId: String(ev.refundRef || target.transactionId || ev.paymentRef || '') }); }
@@ -313,6 +324,61 @@ export class PaymentsService {
                 return;
         }
         });
+    }
+
+    /**
+     * Dashboard-refund reconciliation (0.4.0, free, per channel). Each refund the provider reports that
+     * Vendure does not have — matched by the provider's refund id — becomes a Settled Vendure refund on
+     * the payment, capped at what is left to refund, with an order history note and one `refund` ledger
+     * row (`"origin":"provider"`). The refund id is the key: a second event for the same refund (Stripe
+     * sends `charge.refunded` and `refund.updated`) finds it and does nothing. Refunds this plugin made
+     * itself are recognised by their ledger row (or are still in flight, and the event is retried).
+     */
+    private async reconcileProviderRefunds(ctx: RequestContext, order: Order, payment: Payment, provider: PaymentProvider, method: ResolvedMethod, ev: NormalisedEvent, rec: (kind: any, status: any, extra?: any) => Promise<number>): Promise<void> {
+        const refunds = payment.refunds || [];
+        const known = new Set(refunds.map(r => String(r.transactionId || '')).filter(Boolean));
+        let candidates: Array<{ id: string; amount: number }> = [];
+        if (ev.refundRef) {
+            const amount = ev.refundAmount ?? (ev.refundedTotal == null ? ev.amount : undefined);
+            if (amount != null) candidates = [{ id: ev.refundRef, amount: Number(amount) }];
+        } else if (provider.listRefunds && ev.paymentRef) {
+            // The event names no refund (Stripe's charge.refunded on API versions from 2022-11-15): read them back.
+            const list = await provider.listRefunds(method.args, ev.paymentRef);
+            candidates = list.filter(r => r.status === 'succeeded').sort((a, b) => Number(a.created || 0) - Number(b.created || 0)).map(r => ({ id: r.id, amount: r.amount }));
+        } else if (ev.refundedTotal != null && ev.paymentRef) {
+            // Only a running total (Mollie): what it exceeds the refunds Vendure has is one dashboard refund.
+            const counted = refunds.filter(r => r.state !== 'Failed').reduce((n, r) => n + Number(r.total || 0), 0);
+            const diff = Number(ev.refundedTotal) - counted;
+            if (diff > 0 && !ownRefundInFlight(payment.transactionId)) candidates = [{ id: `${ev.paymentRef}:refunded:${ev.refundedTotal}`.slice(0, 190), amount: diff }];
+        }
+        if (!candidates.length) {
+            Logger.verbose(`${provider.code} ${ev.type} on ${order.code}: no refund to reconcile`, loggerCtx);
+            return;
+        }
+        let left = Number(payment.amount) - refunds.filter(r => r.state !== 'Failed').reduce((n, r) => n + Number(r.total || 0), 0);
+        for (const c of candidates) {
+            if (known.has(c.id)) continue;
+            if (await this.ledger.isOwnRefund(provider.code, c.id)) continue; // ours: Vendure's own Refund row carries it
+            if (ownRefundInFlight(payment.transactionId)) throw new Error(`refund ${c.id} may be one this plugin is making right now — retry`);
+            const amount = Math.min(Math.round(c.amount), left);
+            if (!(amount > 0)) {
+                Logger.warn(`${provider.code} refund ${c.id} on ${order.code} not applied: nothing left to refund on payment ${payment.id}`, loggerCtx);
+                continue;
+            }
+            const refund = new Refund({
+                payment, paymentId: payment.id, total: amount, items: 0, shipping: 0, adjustment: 0, method: payment.method,
+                reason: `Refunded in the ${provider.name} dashboard`, state: 'Settled', transactionId: c.id, lines: [] as any,
+                metadata: { origin: 'provider', provider: provider.code, eventId: ev.id },
+            } as any);
+            await this.connection.getRepository(ctx, Refund).save(refund);
+            known.add(c.id);
+            left -= amount;
+            await rec('refund', 'ok', { paymentRef: c.id, amount, meta: { event: ev.type, eventId: ev.id, origin: 'provider' } });
+            try {
+                await this.historyService.createHistoryEntryForOrder({ ctx, orderId: order.id, type: HistoryEntryType.ORDER_NOTE, data: { note: `${provider.name} reported a refund of ${(amount / 100).toFixed(2)} ${order.currencyCode} made in its dashboard (${c.id}); recorded as a settled refund on payment ${payment.id}.` } });
+            } catch (e: any) { Logger.verbose(`history note for ${order.code}: ${e?.message || e}`, loggerCtx); }
+            Logger.info(`${provider.code} dashboard refund ${c.id} of ${amount} ${order.currencyCode} recorded on ${order.code}`, loggerCtx);
+        }
     }
 
     /** Settle a Vendure payment because the provider said so; the handler trusts the mark for 60 s at most. */

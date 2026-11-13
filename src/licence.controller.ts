@@ -5,6 +5,7 @@ import { describeLicence, evalInstanceId, performSelfUpdate, selfUpdateEnv, isAd
 import { HuloPaymentsPlugin, getOptions } from './plugin';
 import { HuloPaymentsLicenceService } from './licence.service';
 import { HuloPaymentsEngagementService, PREMIUM_FEATURES } from './engagement.service';
+import { BUY_URL } from './core/runtime';
 
 function denyUnlessAdmin(ctx: RequestContext, res: Response, write: boolean | 'superadmin'): boolean {
     const needed = write === 'superadmin' ? [Permission.SuperAdmin] : write ? [Permission.UpdateOrder] : [Permission.ReadOrder];
@@ -175,6 +176,7 @@ export class HuloPaymentsLicenceController {
         const to = String(body?.to || '').trim().slice(0, 320) || undefined;
         if (to && !/^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/.test(to)) return res.status(400).json({ error: 'bad-request', message: 'Enter a valid email address' });
         const r = await this.engagement.digest.sendNow(to);
+        if (r.reason === 'licence-required') return res.status(402).json({ error: 'licence-required', message: 'The weekly report needs a HULO Payments licence', buyUrl: BUY_URL });
         return res.json({ sent: r.sent, to: r.to, ...(r.reason ? { reason: r.reason } : {}), subject: r.preview.subject });
     }
 
