@@ -150,7 +150,7 @@ export class HostedCheckoutController {
     async page(@Param('token') token: string, @Req() req: Request, @Res() res: Response) {
         if (rateLimited(req, res, 'hostedPage')) return;
         const loaded = await this.load(token);
-        if (!loaded) return res.status(404).type('html').send(this.gone('This payment link is not valid.'));
+        if (!loaded) { securityHeaders(res); return res.status(404).type('html').send(this.gone('This payment link is not valid.')); }
         const { s, ctx, order } = loaded;
         const nonce = randomBytes(16).toString('base64');
         securityHeaders(res, nonce);

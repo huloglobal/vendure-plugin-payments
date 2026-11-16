@@ -5,6 +5,38 @@ documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project
 adheres to [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-11-16
+
+Improvement round. Payment behaviour is unchanged; ops alerts look different and operators outside the default
+channel see less.
+
+### Changed
+- **Ops alert e-mails** (disputes opened and closed, a provider confirming a different amount, a renewal that
+  failed or ended the subscription, a subscription that could not be created) now use the shared e-mail design:
+  a compact 600px card with the channel's logo or brand name over an accent bar, an info box with the order,
+  provider, amount and references (references in a monospace font), a warning box where something needs doing,
+  an *Open Payments in Admin* button and a sign-off. Every alert has an HTML and a plain-text part (before, text
+  only). Amounts are formatted in the order's currency instead of raw minor units.
+- Branding comes from the channel's hosted-page settings (brand name, accent colour when changed, logo). New
+  optional `email` plugin option as the fallback for every channel: `accentColor` (default `#155dfc`), `logoUrl`,
+  `storeName`, `supportEmail`, `footerText`.
+- `renderEmail()` is exported for hosts that want their own payment e-mails in the same design.
+- Dev dependencies: `@nestjs/schedule` ^12.0.4, `mysql2` ^3.24.6.
+
+### Fixed
+- **Channel scoping of subscriptions.** An administrator working in a non-default channel could list every
+  channel's subscriptions (with customer e-mail addresses) and cancel, pause or resume them. The list is now
+  limited to the operator's channel, and the actions answer 403 for another channel's subscription (404 for an
+  unknown id). The dashboard's subscription figures and configured providers follow the dashboard's channel.
+- The webhook event log (`GET /hulo-payments/events`) has no channel, so it is now shown only in the default
+  channel; other channels get an empty list.
+- The Providers tab listed every channel's payment methods and channels to operators of a single channel; it now
+  lists their channel's only.
+- A provider pay link asked for a **disabled** payment method by code was issued anyway; it is now refused
+  (`no-provider`, "payment method … is disabled").
+- An unknown or mistyped hosted-page link (404) now carries the same no-store, no-framing security headers as
+  every other hosted-page response.
+
 ## [0.4.0] — 2026-11-13
 
 Parity with HULO Payments for WordPress. Existing payment behaviour is unchanged by default: Stripe sessions,

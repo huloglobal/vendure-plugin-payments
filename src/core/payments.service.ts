@@ -10,6 +10,7 @@ import { LedgerService, loggerCtx } from './ledger.service';
 import { getRuntime, requirePremium } from './runtime';
 import { clearSettledByWebhook, markSettledByWebhook, ownRefundInFlight, registerWebhookPayment } from './handlers';
 import { request } from './rest';
+import { formatMoney } from './money';
 import { SURCHARGE_SKU_PREFIX, huloSurcharges, surchargeAmount, surchargeMatches, surchargeRule } from './surcharge';
 import { ensureMollieCustomer } from '../providers/mollie';
 import { SubscriptionService } from '../subscriptions/subscription.service';
@@ -238,7 +239,18 @@ export class PaymentsService {
             const reason = `amount mismatch: provider ${ev.amount} ${ev.currency}, payment ${payment.amount} ${order.currencyCode}`;
             Logger.warn(`${providerCode} ${ev.type} for ${order.code} not applied — ${reason}`, loggerCtx);
             await rec('failure', 'failed', { reason });
-            void getRuntime().notifyOps({ kind: 'payments.amount_mismatch', subject: `${provider.name} confirmed a different amount on order ${order.code}`, text: `${provider.name} reported ${ev.type} for ${ev.amount} ${ev.currency} (ref ${ev.paymentRef || '?'}) but the Vendure payment is ${payment.amount} ${order.currencyCode}. The payment was left Authorized; check it in the provider dashboard before fulfilling.`, orderCode: order.code, channelId });
+            void getRuntime().notifyOps({
+                kind: 'payments.amount_mismatch', subject: `${provider.name} confirmed a different amount on order ${order.code}`,
+                text: `${provider.name} reported ${ev.type} for ${formatMoney(Number(ev.amount), ev.currency)} (ref ${ev.paymentRef || '?'}) but the Vendure payment is ${formatMoney(payment.amount, order.currencyCode)}. The payment was left Authorized.`,
+                warning: 'Check the payment in the provider dashboard before fulfilling this order.',
+                details: [
+                    { label: 'Provider', value: provider.name },
+                    { label: 'Provider amount', value: formatMoney(Number(ev.amount), ev.currency) },
+                    { label: 'Order payment', value: formatMoney(payment.amount, order.currencyCode) },
+                    { label: 'Payment ref', value: String(ev.paymentRef || '?'), mono: true },
+                ],
+                orderCode: order.code, channelId,
+            });
             return;
         }
         switch (ev.type) {
@@ -307,7 +319,20 @@ export class PaymentsService {
             case 'dispute.opened':
             case 'dispute.closed': {
                 await rec('dispute', ev.type === 'dispute.opened' ? 'open' : (/won|reversed|resolved_seller|seller_favour/i.test(ev.reason || '') ? 'won' : 'lost'));
-                void getRuntime().notifyOps({ kind: `payments.${ev.type}`, subject: `${provider.name} dispute ${ev.type === 'dispute.opened' ? 'opened' : 'closed'}${order ? ` on order ${order.code}` : ''}`, text: `${provider.name} reported a ${ev.type === 'dispute.opened' ? 'new' : 'closed'} dispute${ev.reason ? ` (${ev.reason})` : ''}${ev.amount != null ? ` for ${ev.amount / 100} ${ev.currency}` : ''}. Payment ref ${ev.paymentRef || '?'}.`, orderCode: order?.code, channelId });
+                const opened = ev.type === 'dispute.opened';
+                const disputed = ev.amount != null && ev.currency ? formatMoney(Number(ev.amount), ev.currency) : null;
+                void getRuntime().notifyOps({
+                    kind: `payments.${ev.type}`, subject: `${provider.name} dispute ${opened ? 'opened' : 'closed'}${order ? ` on order ${order.code}` : ''}`,
+                    text: `${provider.name} reported a ${opened ? 'new' : 'closed'} dispute${ev.reason ? ` (${ev.reason})` : ''}${disputed ? ` for ${disputed}` : ''}. Payment ref ${ev.paymentRef || '?'}.`,
+                    warning: opened ? 'Respond in the provider dashboard before its deadline, or the dispute is lost by default.' : undefined,
+                    details: [
+                        { label: 'Provider', value: provider.name },
+                        ...(disputed ? [{ label: 'Amount', value: disputed }] : []),
+                        ...(ev.reason ? [{ label: 'Reason', value: String(ev.reason) }] : []),
+                        { label: 'Payment ref', value: String(ev.paymentRef || '?'), mono: true },
+                    ],
+                    orderCode: order?.code, channelId,
+                });
                 return;
             }
             case 'paylink.completed': {

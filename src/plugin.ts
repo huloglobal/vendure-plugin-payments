@@ -21,7 +21,8 @@ import { HuloPaymentsShopResolver, shopApiExtensions } from './core/shop-api';
 import { huloPaymentRulesChecker } from './core/eligibility';
 import { makeHandler } from './core/handlers';
 import { allProviders, registerProvider } from './core/provider';
-import { configureRuntime, getRuntime, OpsMail } from './core/runtime';
+import { ChannelBranding, configureRuntime, getRuntime, OpsEvent, OpsMail } from './core/runtime';
+import { renderEmail } from './core/email-layout';
 import { stripeProvider } from './providers/stripe';
 import { adyenProvider } from './providers/adyen';
 import { paypalProvider } from './providers/paypal';
@@ -65,6 +66,22 @@ export interface HuloPaymentsPluginOptions {
         webhookUrl?: string;
         /** Email via SMTP_* env (uses nodemailer when the host has it). */
         email?: string;
+    };
+    /**
+     * Look of the plugin's e-mails (ops alerts). A channel's hosted-page brand name, accent colour and
+     * logo (Payments → Settings) win; these are the fallbacks for every channel.
+     */
+    email?: {
+        /** Accent colour, `#rrggbb` (default `#155dfc`). */
+        accentColor?: string;
+        /** Absolute URL of the logo shown at the top of the e-mail. */
+        logoUrl?: string;
+        /** Store name when the channel has no brand name. */
+        storeName?: string;
+        /** Shown under the sign-off. */
+        supportEmail?: string;
+        /** Footer or legal text (company name, registration, address). */
+        footerText?: string;
     };
     /** Disable the hourly renewal scheduler (e.g. hosts running it elsewhere). */
     disableScheduler?: boolean;
@@ -145,7 +162,32 @@ export async function sendOpsMail(mail: OpsMail): Promise<void> {
     }
 }
 
-async function notifyOps(event: { kind: string; subject: string; text: string; orderCode?: string; channelId?: number | null }): Promise<void> {
+/**
+ * The ops alert e-mail (compact shared design, HTML and plain text). Pure: `branding` is the
+ * channel's look, `options` the plugin's `email` fallbacks.
+ */
+export function composeOpsMail(event: OpsEvent, branding: ChannelBranding, options: HuloPaymentsPluginOptions['email'] = {}, adminUrl?: string | null): { subject: string; text: string; html: string } {
+    const rows = [...(event.details || [])];
+    if (event.orderCode && !rows.some(r => /^order$/i.test(r.label))) rows.unshift({ label: 'Order', value: event.orderCode, mono: true });
+    const mail = renderEmail({
+        storeName: branding.storeName || options?.storeName || 'Your store',
+        accentColor: branding.accentColor || options?.accentColor,
+        logoUrl: branding.logoUrl || options?.logoUrl,
+        supportEmail: options?.supportEmail,
+        footerText: options?.footerText,
+    }, {
+        compact: true,
+        preheader: event.text.slice(0, 140),
+        heading: event.subject,
+        paragraphs: [event.text],
+        warning: event.warning ? { text: event.warning } : null,
+        details: rows.length ? { title: 'Details', rows } : null,
+        primaryButton: adminUrl ? { label: 'Open Payments in Admin', url: adminUrl } : null,
+    });
+    return { subject: `[Payments] ${event.subject}`, text: mail.text, html: mail.html };
+}
+
+async function notifyOps(event: OpsEvent): Promise<void> {
     const ops = getOptions().ops || {};
     // eslint-disable-next-line no-console
     console.warn(`[${PKG_NAME}] ${event.kind}: ${event.subject} — ${event.text}`);
@@ -163,7 +205,13 @@ async function notifyOps(event: { kind: string; subject: string; text: string; o
     const channelEmail = event.channelId ? await getRuntime().channelOpsEmail(Number(event.channelId)).catch(() => null) : null;
     const to = channelEmail || ops.email;
     if (to && smtpConfigured()) {
-        try { await sendOpsMail({ to, subject: `[Payments] ${event.subject}`, text: event.text }); }
+        try {
+            const branding = await getRuntime().channelBranding(event.channelId ?? null).catch(() => ({ storeName: '', accentColor: null, logoUrl: null }));
+            const base = String(getOptions().publicBaseUrl || '').replace(/\/$/, '');
+            const adminUrl = /^https?:\/\//.test(base) ? `${base}/admin/extensions/hulo-payments` : null;
+            const mail = composeOpsMail(event, branding, getOptions().email, adminUrl);
+            await sendOpsMail({ to, ...mail });
+        }
         catch (e: any) { console.warn(`[${PKG_NAME}] ops e-mail failed: ${e?.message || e}`); }
     }
 }

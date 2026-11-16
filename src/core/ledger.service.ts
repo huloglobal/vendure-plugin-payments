@@ -78,12 +78,36 @@ export class LedgerService implements OnModuleInit {
     async onModuleInit() {
         await this.ensureSchema();
         // Ops alerts go to the channel's own address (Settings → Operations) before the `ops.email` option.
-        configureRuntime({ channelOpsEmail: async channelId => (await this.getSettings(channelId)).opsEmail || null });
+        configureRuntime({
+            channelOpsEmail: async channelId => (await this.getSettings(channelId)).opsEmail || null,
+            channelBranding: channelId => this.channelBranding(channelId),
+        });
         // Retention for the webhook idempotency log: 180 days is far beyond any provider's redelivery window.
         const purge = () => this.db.query(`DELETE FROM hulo_payment_event WHERE receivedAt < DATE_SUB(NOW(), INTERVAL 180 DAY)`).catch(() => undefined);
         void purge();
         const t = setInterval(purge, 12 * 3600_000);
         if (typeof t.unref === 'function') t.unref();
+    }
+
+    /**
+     * E-mail branding for a channel: the hosted page's brand name (else the channel code), its accent
+     * when changed from the stock blue, and its logo. Never throws.
+     */
+    async channelBranding(channelId: number | null): Promise<{ storeName: string; accentColor: string | null; logoUrl: string | null }> {
+        try {
+            const id = Number(channelId) || 1;
+            const s = await this.getSettings(id);
+            let storeName = String(s.hostedBrandName || '').trim();
+            if (!storeName) {
+                const [row] = await this.db.query(`SELECT code FROM channel WHERE id = ?`, [id]).catch(() => [] as any[]);
+                const code = String(row?.code || '');
+                storeName = code && code !== '__default_channel__' ? code : '';
+            }
+            const accent = s.hostedAccent && s.hostedAccent.toLowerCase() !== DEFAULT_SETTINGS.hostedAccent ? s.hostedAccent : null;
+            return { storeName, accentColor: accent, logoUrl: s.hostedLogoUrl || null };
+        } catch {
+            return { storeName: '', accentColor: null, logoUrl: null };
+        }
     }
 
     /** `ALTER TABLE … ADD COLUMN IF NOT EXISTS` is MariaDB/Postgres syntax; MySQL 8 needs the check up front. */

@@ -208,6 +208,8 @@ export class PayLinkService {
         const method = input?.methodCode
             ? methods.find(m => m.paymentMethodCode === input.methodCode || m.handlerCode === input.methodCode)
             : methods.find(m => m.enabled && usable(m));
+        // A method chosen by code must be enabled too: a disabled method takes no payments anywhere else.
+        if (method && !method.enabled) throw new PayLinkError('no-provider', `payment method ${method.paymentMethodCode} is disabled`);
         const provider = method ? getProvider(method.handlerCode) : undefined;
         if (!method || !provider?.createPayLink) throw new PayLinkError('no-provider', partial ? 'a link for part of the order needs an enabled Stripe method on this channel' : 'no enabled provider with pay-by-link on this channel');
         if (partial && provider.code !== 'hulo-stripe') throw new PayLinkError('invalid-input', 'a link for part of the order can only be a Stripe link');

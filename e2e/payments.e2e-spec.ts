@@ -16,7 +16,7 @@ import { PaymentsService } from '../src/core/payments.service';
  * registration, admin guards, webhook verification + idempotency, the
  * ledger, settings and the subscription tables. Provider round-trips are
  * covered by the unit suite against recorded shapes.
- *   PAY_E2E_DB_HOST PAY_E2E_DB_PORT PAY_E2E_DB_USER PAY_E2E_DB_PASS
+ *   PAY_E2E_DB_HOST PAY_E2E_DB_PORT PAY_E2E_DB_USER PAY_E2E_DB_PASS (PAY_E2E_DB_NAME, default hulo_pay_e2e)
  */
 const DB = process.env.PAY_E2E_DB_HOST
     ? { host: process.env.PAY_E2E_DB_HOST, port: Number(process.env.PAY_E2E_DB_PORT || 3306), username: process.env.PAY_E2E_DB_USER || 'root', password: process.env.PAY_E2E_DB_PASS || '' }
@@ -30,7 +30,7 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
     registerInitializer('mysql', new MysqlInitializer());
     const config = mergeConfig(testConfig, {
         apiOptions: { port: PORT },
-        dbConnectionOptions: { type: 'mysql' as const, host: DB?.host, port: DB?.port, username: DB?.username, password: DB?.password, database: 'hulo_pay_e2e', synchronize: true },
+        dbConnectionOptions: { type: 'mysql' as const, host: DB?.host, port: DB?.port, username: DB?.username, password: DB?.password, database: process.env.PAY_E2E_DB_NAME || 'hulo_pay_e2e', synchronize: true },
         plugins: [HuloPaymentsPlugin.init({ publicBaseUrl: BASE, disableScheduler: true })],
     });
     const { server, adminClient } = createTestEnvironment(config);
@@ -221,6 +221,20 @@ run('@huloglobal/vendure-plugin-payments (MariaDB)', () => {
         const list = await subs().list({});
         expect(list.totalItems).toBe(0);
         expect((await subs().stats()).active).toBe(0);
+    });
+
+    it('0.5.0: subscriptions are listed per channel and alerts take the channel branding', async () => {
+        const conn = (server as any).app.get(TransactionalConnection) as TransactionalConnection;
+        await conn.rawConnection.query(
+            `INSERT INTO hulo_subscription (provider, providerSubscriptionRef, channelId, customerEmail, orderCode, variantId, variantName, amount, currency, status, createdAt, updatedAt)
+             VALUES ('hulo-stripe', 'sub_ch2', 2, 'two@example.test', 'CH2ORDER', 1, 'Plan', 1000, 'GBP', 'active', NOW(), NOW())`);
+        expect((await subs().list({ channelId: 1 })).items.map(i => i.providerSubscriptionRef)).not.toContain('sub_ch2');
+        expect((await subs().list({ channelId: 2 })).items.map(i => i.providerSubscriptionRef)).toEqual(['sub_ch2']);
+        expect((await subs().stats(2)).active).toBe(1);
+        expect((await subs().stats(1)).active).toBe(0);
+        const b = await getRuntime().channelBranding(1);
+        expect(b).toEqual({ storeName: 'Staging shop', accentColor: null, logoUrl: null });
+        await conn.rawConnection.query(`DELETE FROM hulo_subscription WHERE providerSubscriptionRef = 'sub_ch2'`);
     });
     // ── 0.3.3: surcharge follows the method charged; provider confirmations bound to the payment ──
     const shopClient = () => {

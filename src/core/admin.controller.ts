@@ -76,7 +76,7 @@ export class HuloPaymentsAdminController {
         const days = clampDays(q.days, 30);
         const now = new Date();
         const [ledger, subs, methods, renewalsRecovered] = await Promise.all([
-            this.ledger.stats(channelId, days), this.subscriptions.stats(), listHuloMethods(this.connection),
+            this.ledger.stats(channelId, days), this.subscriptions.stats(channelId), listHuloMethods(this.connection, channelId ?? undefined),
             this.engagement.renewalsRecovered(new Date(now.getTime() - days * 86_400_000), now, channelId).catch(() => 0),
         ]);
         return res.json({
@@ -94,15 +94,20 @@ export class HuloPaymentsAdminController {
     @Get('events')
     async events(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, false)) return;
+        // Webhook events carry no channel: only the default channel (which sees every channel) may read them.
+        if (!inDefaultChannel(ctx)) return res.json([]);
         return res.json(await this.ledger.recentEvents(100));
     }
 
     @Get('providers')
     async providers(@Ctx() ctx: RequestContext, @Res() res: Response) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        const methods = await listHuloMethods(this.connection);
+        // An operator outside the default channel sees that channel's methods only.
+        const own = inDefaultChannel(ctx) ? undefined : Number(ctx.channelId);
+        const methods = await listHuloMethods(this.connection, own);
         const base = getRuntime().publicBaseUrl().replace(/\/$/, '');
-        const channels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel ORDER BY id`).catch(() => []);
+        const allChannels: any[] = await this.connection.rawConnection.query(`SELECT id, code FROM channel ORDER BY id`).catch(() => []);
+        const channels = own ? allChannels.filter(c => Number(c.id) === own) : allChannels;
         return res.json({
             webhookBase: `${base}/hulo-payments/webhook/`,
             channels: channels.map(c => ({ id: Number(c.id), code: c.code })),
@@ -158,12 +163,21 @@ export class HuloPaymentsAdminController {
     @Get('subscriptions')
     async subscriptionsList(@Ctx() ctx: RequestContext, @Res() res: Response, @Query() q: any) {
         if (denyUnlessAdmin(ctx, res, false)) return;
-        return res.json(await this.subscriptions.list({ status: q.status, search: q.q, page: Number(q.page) || 1, perPage: Number(q.perPage) || 50 }));
+        return res.json(await this.subscriptions.list({ status: q.status, search: q.q, page: Number(q.page) || 1, perPage: Number(q.perPage) || 50, channelId: scopedChannel(ctx, q.channelId) }));
+    }
+
+    /** A subscription an operator may act on: it exists and belongs to a channel the operator can write to. */
+    private async ownSubscription(ctx: RequestContext, res: Response, id: string): Promise<boolean> {
+        const sub = await this.subscriptions.findOne(Number(id));
+        if (!sub) { res.status(404).json({ error: 'not found' }); return false; }
+        if (!inDefaultChannel(ctx) && Number(sub.channelId) !== Number(ctx.channelId)) { res.status(403).json({ error: 'forbidden' }); return false; }
+        return true;
     }
 
     @Post('subscriptions/:id/cancel')
     async cancelSubscription(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('id') id: string, @Body() body: any) {
         if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!(await this.ownSubscription(ctx, res, id))) return;
         try { requirePremium('Subscriptions'); return res.json(await this.subscriptions.cancel(Number(id), body?.atPeriodEnd !== false, `admin:${ctx.activeUserId}`)); }
         catch (e) { return fail(res, e); }
     }
@@ -171,12 +185,14 @@ export class HuloPaymentsAdminController {
     @Post('subscriptions/:id/pause')
     async pauseSubscription(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('id') id: string) {
         if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!(await this.ownSubscription(ctx, res, id))) return;
         try { requirePremium('Subscriptions'); return res.json(await this.subscriptions.pause(Number(id), false)); } catch (e) { return fail(res, e); }
     }
 
     @Post('subscriptions/:id/resume')
     async resumeSubscription(@Ctx() ctx: RequestContext, @Res() res: Response, @Param('id') id: string) {
         if (denyUnlessAdmin(ctx, res, true)) return;
+        if (!(await this.ownSubscription(ctx, res, id))) return;
         try { requirePremium('Subscriptions'); return res.json(await this.subscriptions.pause(Number(id), true)); } catch (e) { return fail(res, e); }
     }
 

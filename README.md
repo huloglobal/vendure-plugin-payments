@@ -81,6 +81,7 @@ plugins: [
     publicBaseUrl: 'https://shop.example.com',        // webhook + return URLs
     licenceKey: process.env.HULO_LICENCE_KEY_PAYMENTS, // optional — or activate in the admin
     ops: { email: 'ops@example.com', webhookUrl: process.env.OPS_SLACK_WEBHOOK },
+    email: { accentColor: '#155dfc', logoUrl: 'https://shop.example.com/logo.png', footerText: 'Example Ltd, registered in England 01234567' }, // optional look of the alert e-mails
     hostedReturnHosts: ['shop.example.com'],          // optional: hosts the hosted checkout may return to
     hostedCsp: 'report-only',                         // optional: Content-Security-Policy on the hosted page ('enforce' | 'report-only' | 'off')
     rateLimits: { hostedPage: 120, hostedAction: 40, webhook: 1200, cspReport: 60 }, // optional, per minute per IP; false = off
@@ -320,8 +321,18 @@ settled payments and disputes for the last 7 days, the licence notice when
 a trial or key is about to end, and a link to the Payments page. Needs
 `ReadOrder`.
 
-**Ops alerts.** Disputes and failed renewals go to the channel's own
+**Ops alerts.** Disputes, amount mismatches, failed renewals and
+subscriptions that could not be created go to the channel's own
 Settings → Operations address first, then the `ops.email` plugin option.
+The e-mails have an HTML and a plain-text part and use the channel's
+hosted-page brand name, accent colour and logo; the optional `email`
+plugin option (`accentColor`, default `#155dfc`, `logoUrl`, `storeName`,
+`supportEmail`, `footerText`) is the fallback. `renderEmail()` is exported
+if you want your own payment e-mails in the same design.
+
+**Channels.** Administrators working in a channel other than the default
+one see and act on that channel's ledger, settings, payment methods and
+subscriptions only; the webhook event log is shown in the default channel.
 
 The anonymous usage numbers (counts and totals, never customer data) that
 the evaluation ping sends to the licence server keep flowing after

@@ -1,3 +1,4 @@
+import { formatMoney } from '../core/money';
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { Logger, Order, Payment, TransactionalConnection } from '@vendure/core';
 import { adapterFor } from '@huloglobal/vendure-licence-sdk';
@@ -180,7 +181,7 @@ export class SubscriptionService implements OnModuleInit {
             } catch (e: any) {
                 await this.db.query(`DELETE FROM hulo_subscription WHERE id = ? AND status = 'pending'`, [rowId]).catch(() => undefined);
                 Logger.error(`subscription creation failed for ${order.code} / variant ${plan.variantId}: ${e.message}`, loggerCtx);
-                await getRuntime().notifyOps({ kind: 'payments.subscription.failed', subject: `Subscription could not be created for order ${order.code}`, text: `${plan.name} × ${plan.quantity}: ${e.message}`, orderCode: order.code, channelId });
+                await getRuntime().notifyOps({ kind: 'payments.subscription.failed', subject: `Subscription could not be created for order ${order.code}`, text: `${plan.name} × ${plan.quantity}: ${e.message}`, warning: 'The order is paid but no subscription exists at the provider, so it will not renew. Create it by hand or refund the customer.', orderCode: order.code, channelId });
             }
         }
     }
@@ -214,8 +215,10 @@ export class SubscriptionService implements OnModuleInit {
         return (await this.db.query(`SELECT * FROM hulo_subscription WHERE customerId = ? ORDER BY id DESC`, [customerId])).map((r: any) => this.rowToSub(r));
     }
 
-    async list(opts: { status?: string; search?: string; page?: number; perPage?: number }): Promise<{ items: SubscriptionRow[]; totalItems: number; page: number; perPage: number }> {
+    /** `channelId` limits the list to one channel (operators outside the default channel see only their own). */
+    async list(opts: { status?: string; search?: string; page?: number; perPage?: number; channelId?: number | null }): Promise<{ items: SubscriptionRow[]; totalItems: number; page: number; perPage: number }> {
         const where: string[] = []; const params: any[] = [];
+        if (opts.channelId) { where.push('channelId = ?'); params.push(Number(opts.channelId)); }
         if (opts.status && opts.status !== 'all') { where.push('status = ?'); params.push(opts.status); }
         if (opts.search) { where.push('(orderCode LIKE ? OR customerEmail LIKE ? OR variantName LIKE ? OR providerSubscriptionRef LIKE ?)'); const like = `%${opts.search.slice(0, 80)}%`; params.push(like, like, like, like); }
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -225,8 +228,10 @@ export class SubscriptionService implements OnModuleInit {
         return { items, totalItems: Number(count?.n || 0), page, perPage };
     }
 
-    async stats(): Promise<{ active: number; trialing: number; pastDue: number; canceled30d: number; mrr: Record<string, number> }> {
-        const rows = await this.db.query(`SELECT status, currency, \`interval\`, intervalCount, amount, quantity, updatedAt FROM hulo_subscription`);
+    async stats(channelId: number | null = null): Promise<{ active: number; trialing: number; pastDue: number; canceled30d: number; mrr: Record<string, number> }> {
+        const rows = channelId
+            ? await this.db.query(`SELECT status, currency, \`interval\`, intervalCount, amount, quantity, updatedAt FROM hulo_subscription WHERE channelId = ?`, [Number(channelId)])
+            : await this.db.query(`SELECT status, currency, \`interval\`, intervalCount, amount, quantity, updatedAt FROM hulo_subscription`);
         const mrr: Record<string, number> = {};
         let active = 0, trialing = 0, pastDue = 0, canceled30d = 0;
         const cutoff = Date.now() - 30 * 86400_000;
@@ -326,7 +331,7 @@ export class SubscriptionService implements OnModuleInit {
                 await this.update(sub.id, { status: 'past_due', failures: sub.failures + 1 });
                 await this.ledger.record({ channelId: sub.channelId, provider: providerCode, kind: 'renewal', status: 'failed', orderId: sub.orderId, orderCode: sub.orderCode, paymentRef: ev.paymentRef || ev.subscriptionRef, amount: ev.amount ?? sub.amount * sub.quantity, currency: ev.currency || sub.currency, reason: ev.reason || 'renewal payment failed', meta: { subscriptionId: sub.id } });
                 // Not awaited: the provider's webhook reply must not wait for the ops e-mail (notifyOps never rejects).
-                void getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `Renewal failed: ${sub.variantName} for ${sub.customerEmail}`, text: `${providerCode} could not collect the renewal for subscription ${sub.providerSubscriptionRef} (order ${sub.orderCode})${ev.reason ? `: ${ev.reason}` : ''}.`, orderCode: sub.orderCode, channelId: sub.channelId });
+                void getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `Renewal failed: ${sub.variantName} for ${sub.customerEmail}`, text: `${providerCode} could not collect the renewal for subscription ${sub.providerSubscriptionRef} (order ${sub.orderCode})${ev.reason ? `: ${ev.reason}` : ''}.`, details: subDetails(sub), orderCode: sub.orderCode, channelId: sub.channelId });
                 return;
             case 'subscription.canceled':
                 await this.update(sub.id, { status: 'canceled', cancelAtPeriodEnd: 0, nextChargeAt: null });
@@ -394,10 +399,20 @@ export class SubscriptionService implements OnModuleInit {
                 const giveUp = failures >= settings.dunningDays;
                 await this.update(sub.id, { status: giveUp ? 'canceled' : 'past_due', failures, nextChargeAt: giveUp ? null : this.sqlDate(new Date(Date.now() + 86400_000)) });
                 await this.ledger.record({ channelId: sub.channelId, provider: sub.provider, kind: 'renewal', status: 'failed', orderId: sub.orderId, orderCode: sub.orderCode, paymentRef: r.transactionId || reference, amount: sub.amount * sub.quantity, currency: sub.currency, reason: r.errorMessage || 'declined', meta: { subscriptionId: sub.id, failures } });
-                await getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `${giveUp ? 'Subscription cancelled after repeated failures' : 'Renewal failed'}: ${sub.variantName} for ${sub.customerEmail}`, text: `${sub.provider} declined renewal ${reference}${r.errorMessage ? `: ${r.errorMessage}` : ''}. Attempt ${failures} of ${settings.dunningDays}.`, orderCode: sub.orderCode, channelId: sub.channelId });
+                await getRuntime().notifyOps({ kind: 'payments.subscription.past_due', subject: `${giveUp ? 'Subscription cancelled after repeated failures' : 'Renewal failed'}: ${sub.variantName} for ${sub.customerEmail}`, text: `${sub.provider} declined renewal ${reference}${r.errorMessage ? `: ${r.errorMessage}` : ''}. Attempt ${failures} of ${settings.dunningDays}.`, details: [...subDetails(sub), { label: 'Attempt', value: `${failures} of ${settings.dunningDays}` }], warning: giveUp ? 'The subscription has been cancelled. The customer is not charged again.' : undefined, orderCode: sub.orderCode, channelId: sub.channelId });
                 out.failed++;
             }
         }
         return out;
     }
+}
+
+/** The rows every subscription alert shows. */
+function subDetails(sub: SubscriptionRow): Array<{ label: string; value: string; mono?: boolean }> {
+    return [
+        { label: 'Customer', value: sub.customerEmail || '-' },
+        { label: 'Product', value: `${sub.variantName} × ${sub.quantity}` },
+        { label: 'Amount', value: formatMoney(sub.amount * sub.quantity, sub.currency) },
+        { label: 'Subscription', value: sub.providerSubscriptionRef || String(sub.id), mono: true },
+    ];
 }

@@ -19,3 +19,4 @@ export { bankTransferProvider, payLaterProvider } from './providers/offline';
 export { PayLinkService, HuloPayLinkService, PayLinkRequest, PayLinkError, CreatePayLinkInput, PayLinkResult, PayLinkSummary, PayLinkMode, PayLinkErrorCode } from './core/pay-link.service';
 export { DEFAULT_RATE_LIMITS, RateLimitOptions } from './core/rate-limit';
 export { reorderAfterFailure, fallbackSuggestions } from './core/fallback';
+export { renderEmail, EmailBranding, EmailContent, EmailRow } from './core/email-layout';
